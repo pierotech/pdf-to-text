@@ -93,22 +93,21 @@ export default app;
 /**
  * parseSalesReport(rawText)
  *
- * This replicates the logic used in your manual extraction:
- * 1) Detect lines that define the Sucursal ID and Name (e.g. "Sucursal   8422416200034         ( ECI GOYA 0003 ) 263...")
- * 2) Detect lines that begin with a 13-digit EAN, followed by the combined "Importe, CantidadVendida"
- *    e.g. "8437021807011 119,763" => EAN=8437021807011, Importe=119.76, CantidadVendida=3.
- * 3) If the next line starts with "Num. Persona Vtas:", that belongs to the same EAN entry.
+ * This improved parser uses a state‑machine style:
+ * 1. When a line matches the Sucursal regex, we update the current store.
+ * 2. When a line matches the EAN regex (e.g. "8437021807011 119,763"),
+ *    we split the numeric part into Importe and CantidadVendida:
+ *      - If more than 2 digits follow the comma, the extras represent the quantity.
+ *      - Otherwise, quantity defaults to "1".
+ * 3. Optionally, the next line (if it starts with "Num. Persona Vtas:")
+ *    is captured and attached to the current record.
  */
 function parseSalesReport(rawText: string) {
-  // Split PDF text into lines, trim, and drop empty lines
-  const lines = rawText
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
+  // Normalize and filter lines
+  const lines = rawText.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
 
   let currentSucursalID = "";
   let currentSucursalName = "";
-
   const rows: Array<{
     SucursalID: string;
     SucursalName: string;
@@ -118,73 +117,51 @@ function parseSalesReport(rawText: string) {
     NumPersonaVtas: string;
   }> = [];
 
-  // Helper: parse out "Importe" (e.g., 119.76) vs. "CantidadVendida" (e.g., 3) from "119,763"
-  function parseImporteAndQuantity(value: string) {
-    // remove any thousand-separating dots
-    const cleaned = value.replace(/\./g, "");
-    const parts = cleaned.split(",");
-    if (parts.length !== 2) {
-      // fallback if it doesn't match the expected pattern
-      return { importe: value, quantity: "1" };
-    }
-    const [integerPart, decimalPlusQty] = parts;
-    // If more than 2 digits after the comma, the extras are the quantity
-    if (decimalPlusQty.length > 2) {
-      const decimalDigits = decimalPlusQty.slice(0, 2);
-      const qtyDigits = decimalPlusQty.slice(2);
-      return {
-        importe: `${integerPart}.${decimalDigits}`,
-        quantity: qtyDigits,
-      };
-    } else {
-      // e.g. "49,90" => importe=49.90, quantity=1
-      return {
-        importe: `${integerPart}.${decimalPlusQty}`,
-        quantity: "1",
-      };
-    }
-  }
+  // Regex to capture Sucursal lines (e.g., "Sucursal   8422416200034         ( ECI GOYA 0003 ) ...")
+  const sucursalRegex = /^Sucursal\s+(\d{13})\s+\(\s*([^)]*?)\s*\)/;
+  // Regex to capture EAN lines (e.g., "8437021807011 119,763")
+  const eanRegex = /^(\d{13})\s+([\d.,]+)/;
 
-  // Walk each line, detecting either a "Sucursal" or an EAN block
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
 
-    // 1) Detect Sucursal lines, e.g.:
-    //    "Sucursal   8422416200034         ( ECI GOYA 0003 ) 263..."
-    //    We'll capture the 13-digit Sucursal ID and the text in parentheses as the name.
-    const sucursalMatch = line.match(/^Sucursal\s+(\d{13})\s+\(\s*([^)]*)\s*\).*/);
-    if (sucursalMatch) {
-      currentSucursalID = sucursalMatch[1];
-      currentSucursalName = sucursalMatch[2];
+    // Update current Sucursal if line matches
+    const sucMatch = line.match(sucursalRegex);
+    if (sucMatch) {
+      currentSucursalID = sucMatch[1];
+      currentSucursalName = sucMatch[2];
       continue;
     }
 
-    // 2) Detect lines that begin with 13-digit EAN, e.g. "8437021807011 119,763"
-    //    We'll parse out the EAN, then parse the combined importe+cantidad string.
-    const eanMatch = line.match(/^(\d{13})\s+([\d.,]+)/);
+    // Process EAN lines
+    const eanMatch = line.match(eanRegex);
     if (eanMatch) {
       const ean = eanMatch[1];
-      const combinedNumber = eanMatch[2];
-      const { importe, quantity } = parseImporteAndQuantity(combinedNumber);
+      const numBlock = eanMatch[2];
+      const [intPart, fracPart] = numBlock.split(",");
+      let importe = "";
+      let cantidad = "";
+      if (fracPart.length > 2) {
+        importe = `${intPart}.${fracPart.slice(0, 2)}`;
+        cantidad = fracPart.slice(2);
+      } else {
+        importe = `${intPart}.${fracPart}`;
+        cantidad = "1";
+      }
 
-      // Check if next line starts with "Num. Persona Vtas:"
+      // Capture optional Num. Persona Vtas line
       let numPersona = "";
-      if (
-        i + 1 < lines.length &&
-        lines[i + 1].startsWith("Num. Persona Vtas:")
-      ) {
-        const nextLine = lines[++i]; // consume it
-        const personaMatch = nextLine.match(/Num\. Persona Vtas:\s*(\S+)/);
-        if (personaMatch) {
-          numPersona = personaMatch[1];
-        }
+      if (i + 1 < lines.length && lines[i + 1].startsWith("Num. Persona Vtas:")) {
+        const personaMatch = lines[i + 1].match(/Num\. Persona Vtas:\s*(\S+)/);
+        if (personaMatch) numPersona = personaMatch[1];
+        i++; // Skip the persona line
       }
 
       rows.push({
         SucursalID: currentSucursalID,
         SucursalName: currentSucursalName,
         EAN: ean,
-        CantidadVendida: quantity,
+        CantidadVendida: cantidad,
         Importe: importe,
         NumPersonaVtas: numPersona,
       });
@@ -195,8 +172,9 @@ function parseSalesReport(rawText: string) {
 }
 
 /**
- * buildCSV
- * Takes the array of row objects and converts them into a CSV string
+ * buildCSV(rows)
+ *
+ * Converts row objects into a CSV string.
  */
 function buildCSV(
   rows: Array<{
@@ -209,15 +187,15 @@ function buildCSV(
   }>
 ) {
   const header = CSV_HEADERS.join(",");
-  const lines = rows.map((r) => {
-    return [
-      r.SucursalID,
-      `"${r.SucursalName}"`, // keep quotes around name
-      r.EAN,
-      r.CantidadVendida,
-      r.Importe,
-      r.NumPersonaVtas,
-    ].join(",");
-  });
-  return header + "\n" + lines.join("\n");
+  const csvLines = rows.map(row =>
+    [
+      row.SucursalID,
+      `"${row.SucursalName}"`, // Preserve quotes for SucursalName
+      row.EAN,
+      row.CantidadVendida,
+      row.Importe,
+      row.NumPersonaVtas,
+    ].join(",")
+  );
+  return `${header}\n${csvLines.join("\n")}`;
 }
