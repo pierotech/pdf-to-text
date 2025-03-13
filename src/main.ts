@@ -1,8 +1,3 @@
-import { Hono } from "hono";
-import { basicAuth } from "hono/basic-auth";
-import { getDocumentProxy, extractText } from "unpdf";
-import index from "./index.html";
-
 // We'll define the CSV column headers
 const CSV_HEADERS = [
   "SucursalID",
@@ -13,110 +8,34 @@ const CSV_HEADERS = [
   "NumPersonaVtas",
 ];
 
-type Bindings = {
-  BUCKET: R2Bucket;
-  USER: string; // for basicAuth
-  PASS: string; // for basicAuth
-};
-
-const app = new Hono<{ Bindings: Bindings }>();
-
-// Basic auth for all routes
-app.use("*", basicAuth({ username: "USER", password: "PASS" }));
-
-// Serve an HTML form for PDF uploads
-app.get("/", (c) => {
-  return c.html(index);
-});
-
-app.post("/upload", async (c) => {
-  const formData = await c.req.formData();
-  const file = formData.get("pdf");
-
-  if (
-    !file ||
-    typeof file !== "object" ||
-    !(file as any).arrayBuffer ||
-    typeof (file as any).arrayBuffer !== "function"
-  ) {
-    return c.text("Please upload a PDF file.", 400);
-  }
-
-  // 1) Convert file to ArrayBuffer
-  const buffer = await (file as any).arrayBuffer();
-  // 2) Extract text using unpdf
-  const pdf = await getDocumentProxy(new Uint8Array(buffer));
-  const result = await extractText(pdf, { mergePages: true });
-
-  // unify text
-  const rawText = Array.isArray(result.text)
-    ? result.text.join("\n")
-    : result.text;
-
-  // 3) Parse raw text into structured rows
-  const rows = parseSalesReport(rawText);
-
-  // 4) Convert rows to CSV
-  const csvString = buildCSV(rows);
-
-  // 5) Store CSV in R2 bucket
-  const key = crypto.randomUUID() + ".csv";
-  await c.env.BUCKET.put(key, new TextEncoder().encode(csvString), {
-    httpMetadata: { contentType: "text/csv" },
-  });
-
-  // 6) Return a link to download the CSV
-  const filePath = `/file/${key}`;
-  return c.html(`
-    <p>CSV generated! <a href="${filePath}">Download here</a>.</p>
-  `);
-});
-
-// Endpoint to download the CSV from R2
-app.get("/file/:key", async (c) => {
-  const key = c.req.param("key");
-  const object = await c.env.BUCKET.get(key);
-  if (!object) {
-    return c.text("File not found.", 404);
-  }
-  const data = await object.arrayBuffer();
-
-  return c.body(data, 200, {
-    "Content-Type": "text/csv",
-    "Content-Disposition": `attachment; filename="${key}"`,
-    "Cache-Control": "public, max-age=86400",
-  });
-});
-
-export default app;
-
 /**
  * parseSalesReport(rawText)
  *
- * Based on the sample text you provided (with lines like "EAN" on one line,
- * then the actual code on the next, etc.). We'll read line by line and capture:
+ * This version replicates the logic where we:
+ * 1) Identify lines that define the Sucursal ID & Sucursal Name (both on one line).
+ *    Example line:
+ *    Sucursal   8422416200034         ( ECI GOYA 0003 ) 263 09/03/2025   -  09/03/2025
  *
- * - Sucursal lines:
- *      "Sucursal"
- *      [Sucursal ID]
- *      [( ECI NAME )]
+ * 2) Identify lines that start with a 13-digit EAN, followed by a numeric string
+ *    that includes a comma, e.g. "8437021807011 119,763".
+ *    - We parse out the EAN (13 digits).
+ *    - We parse out the Importe (e.g. 119.76).
+ *    - We parse out the CantidadVendida (e.g. 3).
+ *    - If the next line starts with "Num. Persona Vtas:", we grab that code.
  *
- * - EAN block:
- *      "EAN"
- *      [ean code, e.g. 8437021807011]
- *      [Importe, e.g. 49,9]
- *      [CantidadVendida, e.g. 1]
- *      optional line: "Num. Persona Vtas:  XXXXX"
- *
- * If your text has empty lines, we skip them carefully with readNextNonEmptyLine.
+ * 3) Return array of objects with the columns:
+ *    { SucursalID, SucursalName, EAN, CantidadVendida, Importe, NumPersonaVtas }
  */
 function parseSalesReport(rawText: string) {
-  const allLines = rawText.split(/\r?\n/);
+  // Split and trim lines, discard empty lines
+  const lines = rawText
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l);
 
-  // Trim each line, but keep them in array order
-  const lines = allLines.map((l) => l.trim());
+  let currentSucursalID = "";
+  let currentSucursalName = "";
 
-  let i = 0;
   const rows: Array<{
     SucursalID: string;
     SucursalName: string;
@@ -126,79 +45,86 @@ function parseSalesReport(rawText: string) {
     NumPersonaVtas: string;
   }> = [];
 
-  let currentSucursalID = "";
-  let currentSucursalName = "";
-
-  // Helper to skip empty lines and return the next non-empty line or null
-  function readNextNonEmptyLine() {
-    while (i < lines.length) {
-      const line = lines[i];
-      i++;
-      if (line) return line;
+  // Helper function to parse something like "49,91" => { importe: "49.91", quantity: "1" }
+  // or "119,763" => { importe: "119.76", quantity: "3" },
+  // or "423,1411" => { importe: "423.14", quantity: "11" }
+  function parseImporteAndQuantity(value: string) {
+    // Remove any thousand separators (dots), if present
+    const cleaned = value.replace(/\./g, "");
+    // We expect at least a "X,XX" part for the decimal portion. Anything after that is the quantity.
+    const parts = cleaned.split(",");
+    if (parts.length !== 2) {
+      // Fallback if we can’t split properly. This generally shouldn't happen given the PDF format.
+      return { importe: value, quantity: "1" };
     }
-    return null;
+
+    const [integerPart, decimalPlusQty] = parts;
+    // If there are more than 2 digits after the comma, the extras are the quantity.
+    if (decimalPlusQty.length > 2) {
+      // example: "76" + "3" => 76. -> 3, or "14" + "11" => 14. -> 11
+      const decimalDigits = decimalPlusQty.slice(0, 2);
+      const qtyDigits = decimalPlusQty.slice(2);
+      return {
+        importe: `${integerPart}.${decimalDigits}`, // e.g. "119.76"
+        quantity: qtyDigits, // e.g. "3"
+      };
+    } else {
+      // e.g. "49,91" => 49.91 => quantity=1
+      return {
+        importe: `${integerPart}.${decimalPlusQty}`,
+        quantity: "1",
+      };
+    }
   }
 
-  while (i < lines.length) {
+  for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
-    i++;
 
-    // Skip empty lines
-    if (!line) continue;
-
-    // If line == "Sucursal", read the next lines for ID and name
-    if (line.toLowerCase() === "sucursal") {
-      const sucID = readNextNonEmptyLine();
-      if (sucID) {
-        currentSucursalID = sucID;
-      }
-
-      // The next non-empty line might be e.g. "( ECI GOYA 0003 )"
-      const sucName = readNextNonEmptyLine();
-      if (sucName) {
-        // remove parentheses if present
-        currentSucursalName = sucName.replace(/^\(|\)$/g, "").trim();
-      }
+    // 1) Detect Sucursal line:
+    //    e.g.: "Sucursal   8422416200034         ( ECI GOYA 0003 ) 263 09/03/2025 - 09/03/2025"
+    // We'll capture the 8422416200034 as group1, the name ECI GOYA 0003 as group2.
+    const sucursalMatch = line.match(
+      /^Sucursal\s+(\d+)\s+\(\s*(.*?)\s*\)\s+/
+    );
+    if (sucursalMatch) {
+      currentSucursalID = sucursalMatch[1];
+      currentSucursalName = sucursalMatch[2];
       continue;
     }
 
-    // If line == "EAN", then read EAN code, Importe, Cantidad, optional persona line
-    if (line.toLowerCase() === "ean") {
-      const eanCode = readNextNonEmptyLine() || "";
-      const importe = readNextNonEmptyLine() || "";
-      const qty = readNextNonEmptyLine() || "";
+    // 2) Detect lines that begin with a 13-digit EAN followed by the numeric part
+    //    e.g. "8437021807011 119,763"
+    const eanMatch = line.match(/^(\d{13})\s+([\d.,]+)/);
+    if (eanMatch) {
+      const ean = eanMatch[1];
+      const combinedNumber = eanMatch[2]; // e.g. "119,763"
 
-      // Attempt to read next line for persona, but if it doesn't start with "Num. Persona Vtas:", revert
-      let personaLine = readNextNonEmptyLine();
+      // Extract Importe & CantidadVendida
+      const { importe, quantity } = parseImporteAndQuantity(combinedNumber);
+
+      // Next line might be "Num. Persona Vtas:  0051258002"
       let numPersona = "";
-      if (personaLine && personaLine.startsWith("Num. Persona Vtas:")) {
-        const match = personaLine.match(/Num\. Persona Vtas:\s*(\S+)/);
-        if (match) {
-          numPersona = match[1];
+      if (
+        i + 1 < lines.length &&
+        lines[i + 1].startsWith("Num. Persona Vtas:")
+      ) {
+        const personaLine = lines[i + 1];
+        const pm = personaLine.match(/Num\. Persona Vtas:\s*(\S+)/);
+        if (pm) {
+          numPersona = pm[1];
         }
-      } else {
-        // not a persona line, push i back
-        if (personaLine) {
-          i--;
-        }
+        i++; // Skip that line in the loop
       }
 
-      // If there's an EAN code, store the row
-      if (eanCode) {
-        rows.push({
-          SucursalID: currentSucursalID,
-          SucursalName: currentSucursalName,
-          EAN: eanCode,
-          CantidadVendida: qty,
-          Importe: importe,
-          NumPersonaVtas: numPersona,
-        });
-      }
-
-      continue;
+      rows.push({
+        SucursalID: currentSucursalID,
+        SucursalName: currentSucursalName,
+        EAN: ean,
+        CantidadVendida: quantity,
+        Importe: importe,
+        NumPersonaVtas: numPersona,
+      });
     }
-
-    // Otherwise, we ignore lines like "Pto Venta", "Dpto", "Periodo Venta", etc.
   }
 
   return rows;
@@ -206,7 +132,7 @@ function parseSalesReport(rawText: string) {
 
 /**
  * buildCSV
- * Takes the array of row objects and converts them into a CSV string
+ * Takes the array of row objects and converts them into a CSV string.
  */
 function buildCSV(
   rows: Array<{
@@ -231,3 +157,6 @@ function buildCSV(
   });
   return header + "\n" + lines.join("\n");
 }
+
+// Exported for convenience in your original code
+export { parseSalesReport, buildCSV, CSV_HEADERS };
