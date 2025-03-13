@@ -93,10 +93,10 @@ export default app;
 /**
  * parseSalesReport(rawText)
  *
- * This replicates the logic used in the manual extraction:
- * 1) Detect lines that define the Sucursal ID and Name (e.g. "Sucursal   8422416200034         ( ECI GOYA 0003 )...")
- * 2) Detect lines that start with a 13-digit EAN followed by "Importe, CantidadVendida" in one numeric block
- *    (e.g., "8437021807011 119,763" => EAN="8437021807011", Importe="119.76", CantidadVendida="3").
+ * This replicates the logic used in your manual extraction:
+ * 1) Detect lines that define the Sucursal ID and Name (e.g. "Sucursal   8422416200034         ( ECI GOYA 0003 ) 263...")
+ * 2) Detect lines that begin with a 13-digit EAN, followed by the combined "Importe, CantidadVendida"
+ *    e.g. "8437021807011 119,763" => EAN=8437021807011, Importe=119.76, CantidadVendida=3.
  * 3) If the next line starts with "Num. Persona Vtas:", that belongs to the same EAN entry.
  */
 function parseSalesReport(rawText: string) {
@@ -120,7 +120,7 @@ function parseSalesReport(rawText: string) {
 
   // Helper: parse out "Importe" (e.g., 119.76) vs. "CantidadVendida" (e.g., 3) from "119,763"
   function parseImporteAndQuantity(value: string) {
-    // remove possible thousand-separating dots, if any
+    // remove any thousand-separating dots
     const cleaned = value.replace(/\./g, "");
     const parts = cleaned.split(",");
     if (parts.length !== 2) {
@@ -137,7 +137,7 @@ function parseSalesReport(rawText: string) {
         quantity: qtyDigits,
       };
     } else {
-      // e.g. "49,91" => importe=49.91, quantity=1
+      // e.g. "49,90" => importe=49.90, quantity=1
       return {
         importe: `${integerPart}.${decimalPlusQty}`,
         quantity: "1",
@@ -145,13 +145,14 @@ function parseSalesReport(rawText: string) {
     }
   }
 
-  // Walk each line, detecting either a "Sucursal" or an "EAN" line
+  // Walk each line, detecting either a "Sucursal" or an EAN block
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
 
     // 1) Detect Sucursal lines, e.g.:
-    //    "Sucursal   8422416200034         ( ECI GOYA 0003 ) 263 09/03/2025   -  09/03/2025"
-    const sucursalMatch = line.match(/^Sucursal\s+(\d+)\s+\(\s*(.*?)\s*\)/);
+    //    "Sucursal   8422416200034         ( ECI GOYA 0003 ) 263..."
+    //    We'll capture the 13-digit Sucursal ID and the text in parentheses as the name.
+    const sucursalMatch = line.match(/^Sucursal\s+(\d{13})\s+\(\s*([^)]*)\s*\).*/);
     if (sucursalMatch) {
       currentSucursalID = sucursalMatch[1];
       currentSucursalName = sucursalMatch[2];
@@ -159,6 +160,7 @@ function parseSalesReport(rawText: string) {
     }
 
     // 2) Detect lines that begin with 13-digit EAN, e.g. "8437021807011 119,763"
+    //    We'll parse out the EAN, then parse the combined importe+cantidad string.
     const eanMatch = line.match(/^(\d{13})\s+([\d.,]+)/);
     if (eanMatch) {
       const ean = eanMatch[1];
@@ -209,12 +211,12 @@ function buildCSV(
   const header = CSV_HEADERS.join(",");
   const lines = rows.map((r) => {
     return [
-      `"${r.SucursalID}"`,
-      `"${r.SucursalName}"`,
-      `"${r.EAN}"`,
-      `"${r.CantidadVendida}"`,
-      `"${r.Importe}"`,
-      `"${r.NumPersonaVtas}"`,
+      r.SucursalID,
+      `"${r.SucursalName}"`, // keep quotes around name
+      r.EAN,
+      r.CantidadVendida,
+      r.Importe,
+      r.NumPersonaVtas,
     ].join(",");
   });
   return header + "\n" + lines.join("\n");
