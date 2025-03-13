@@ -93,18 +93,18 @@ export default app;
 /**
  * parseSalesReport(rawText)
  *
- * This improved parser uses a state‑machine style:
- * 1. When a line matches the Sucursal regex, we update the current store.
- * 2. When a line matches the EAN regex (e.g. "8437021807011 119,763"),
- *    we split the numeric part into Importe and CantidadVendida:
- *      - If more than 2 digits follow the comma, the extras represent the quantity.
- *      - Otherwise, quantity defaults to "1".
- * 3. Optionally, the next line (if it starts with "Num. Persona Vtas:")
- *    is captured and attached to the current record.
+ * This parser scans the extracted PDF text and:
+ * 1. Updates the current store when a line matching a Sucursal pattern is found.
+ * 2. Captures EAN lines that start with 13 digits and a numeric block (e.g. "8437021807011 49,91").
+ *    It splits the numeric block into an Importe (with two decimals) and CantidadVendida.
+ * 3. If the next line starts with "Num. Persona Vtas:", that value is added.
  */
 function parseSalesReport(rawText: string) {
-  // Normalize and filter lines
-  const lines = rawText.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+  // Split text into lines and trim whitespace; discard empty lines.
+  const lines = rawText
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
 
   let currentSucursalID = "";
   let currentSucursalName = "";
@@ -117,15 +117,36 @@ function parseSalesReport(rawText: string) {
     NumPersonaVtas: string;
   }> = [];
 
-  // Regex to capture Sucursal lines (e.g., "Sucursal   8422416200034         ( ECI GOYA 0003 ) ...")
-  const sucursalRegex = /^Sucursal\s+(\d{13})\s+\(\s*([^)]*?)\s*\)/;
-  // Regex to capture EAN lines (e.g., "8437021807011 119,763")
-  const eanRegex = /^(\d{13})\s+([\d.,]+)/;
+  // Improved regex: allow any leading spaces; case-insensitive for "Sucursal".
+  const sucursalRegex = /^\s*Sucursal\s+(\d{13})\s+.*\(\s*([^)]*?)\s*\)/i;
+  // EAN regex: allow leading spaces.
+  const eanRegex = /^\s*(\d{13})\s+([\d.,]+)/;
+
+  // Helper: parse a number block like "119,763" into importe and quantity.
+  function parseImporteAndQuantity(value: string) {
+    const cleaned = value.replace(/\./g, ""); // remove thousand separators if any
+    const parts = cleaned.split(",");
+    if (parts.length !== 2) {
+      return { importe: value, quantity: "1" };
+    }
+    const [intPart, fracPart] = parts;
+    if (fracPart.length > 2) {
+      return {
+        importe: `${intPart}.${fracPart.slice(0, 2)}`,
+        quantity: fracPart.slice(2),
+      };
+    } else {
+      return {
+        importe: `${intPart}.${fracPart}`,
+        quantity: "1",
+      };
+    }
+  }
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
 
-    // Update current Sucursal if line matches
+    // Update current Sucursal if the line matches.
     const sucMatch = line.match(sucursalRegex);
     if (sucMatch) {
       currentSucursalID = sucMatch[1];
@@ -133,48 +154,41 @@ function parseSalesReport(rawText: string) {
       continue;
     }
 
-    // Process EAN lines
+    // Look for an EAN line.
     const eanMatch = line.match(eanRegex);
     if (eanMatch) {
       const ean = eanMatch[1];
       const numBlock = eanMatch[2];
-      const [intPart, fracPart] = numBlock.split(",");
-      let importe = "";
-      let cantidad = "";
-      if (fracPart.length > 2) {
-        importe = `${intPart}.${fracPart.slice(0, 2)}`;
-        cantidad = fracPart.slice(2);
-      } else {
-        importe = `${intPart}.${fracPart}`;
-        cantidad = "1";
-      }
-
-      // Capture optional Num. Persona Vtas line
+      const { importe, quantity } = parseImporteAndQuantity(numBlock);
       let numPersona = "";
-      if (i + 1 < lines.length && lines[i + 1].startsWith("Num. Persona Vtas:")) {
+      // If the next line contains "Num. Persona Vtas:", capture its value.
+      if (
+        i + 1 < lines.length &&
+        lines[i + 1].startsWith("Num. Persona Vtas:")
+      ) {
         const personaMatch = lines[i + 1].match(/Num\. Persona Vtas:\s*(\S+)/);
-        if (personaMatch) numPersona = personaMatch[1];
-        i++; // Skip the persona line
+        if (personaMatch) {
+          numPersona = personaMatch[1];
+        }
+        i++; // Skip the persona line.
       }
-
       rows.push({
         SucursalID: currentSucursalID,
         SucursalName: currentSucursalName,
         EAN: ean,
-        CantidadVendida: cantidad,
+        CantidadVendida: quantity,
         Importe: importe,
         NumPersonaVtas: numPersona,
       });
     }
   }
-
   return rows;
 }
 
 /**
  * buildCSV(rows)
  *
- * Converts row objects into a CSV string.
+ * Converts the row objects into a CSV string.
  */
 function buildCSV(
   rows: Array<{
@@ -187,10 +201,10 @@ function buildCSV(
   }>
 ) {
   const header = CSV_HEADERS.join(",");
-  const csvLines = rows.map(row =>
+  const csvLines = rows.map((row) =>
     [
       row.SucursalID,
-      `"${row.SucursalName}"`, // Preserve quotes for SucursalName
+      `"${row.SucursalName}"`,
       row.EAN,
       row.CantidadVendida,
       row.Importe,
