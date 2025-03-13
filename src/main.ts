@@ -53,18 +53,8 @@ app.post("/upload", async (c) => {
     ? result.text.join("\n")
     : result.text;
 
-  // (Optional) Debug: see if the extracted text is as you expect
-  console.log("=== EXTRACTED TEXT START ===");
-  console.log(rawText);
-  console.log("=== EXTRACTED TEXT END ===");
-
   // 3) Parse raw text into structured rows
   const rows = parseSalesReport(rawText);
-
-  // If no rows, let's log a small warning
-  if (!rows.length) {
-    console.log("WARNING: No rows parsed from PDF. Possibly the text structure doesn't match the regex.");
-  }
 
   // 4) Convert rows to CSV
   const csvString = buildCSV(rows);
@@ -103,29 +93,30 @@ export default app;
 /**
  * parseSalesReport(rawText)
  *
- * 1) Join all lines into a single string (no \n or \r).
- * 2) Use a chunk-based regex to find each Sucursal block.
- *    The chunk goes from "Sucursal <13digits>" up to the next "Sucursal <13digits>" or end of text.
- * 3) Extract the SucursalID, SucursalName, then parse EAN lines inside that chunk with a separate regex.
- * 4) For each EAN line, parse out EAN (13 digits), Importe, CantidadVendida, optional "Num. Persona Vtas:".
+ * Based on the sample text you provided (with lines like "EAN" on one line,
+ * then the actual code on the next, etc.). We'll read line by line and capture:
+ *
+ * - Sucursal lines:
+ *      "Sucursal"
+ *      [Sucursal ID]
+ *      [( ECI NAME )]
+ *
+ * - EAN block:
+ *      "EAN"
+ *      [ean code, e.g. 8437021807011]
+ *      [Importe, e.g. 49,9]
+ *      [CantidadVendida, e.g. 1]
+ *      optional line: "Num. Persona Vtas:  XXXXX"
+ *
+ * If your text has empty lines, we skip them carefully with readNextNonEmptyLine.
  */
 function parseSalesReport(rawText: string) {
-  // Re-join everything into one line, removing line breaks & extra spaces.
-  const singleLine = rawText.replace(/\s*\r?\n\s*/g, " ");
+  const allLines = rawText.split(/\r?\n/);
 
-  // The store-chunk regex:
-  // - "Sucursal\s+(\d{13})" => captures the store's 13-digit code
-  // - ".*?\(\s*([^)]*?)\s*\)" => captures the text in parentheses as the store name
-  // - Then "(.*?)" => lazily captures everything up to the next Sucursal or end-of-string
-  const storeRegex = new RegExp(
-    //  1) "Sucursal" + some whitespace + 13 digits
-    //  2) Possibly other text up to "("
-    //  3) Capture parentheses content as store name
-    //  4) Then capture everything else lazily, stopping at next "Sucursal <13digits>" or end
-    `Sucursal\\s+(\\d{13}).*?\$begin:math:text$\\\\s*([^)]*?)\\\\s*\\$end:math:text$([\\s\\S]*?)(?=Sucursal\\s+\\d{13}|$)`,
-    "gi"
-  );
+  // Trim each line, but keep them in array order
+  const lines = allLines.map((l) => l.trim());
 
+  let i = 0;
   const rows: Array<{
     SucursalID: string;
     SucursalName: string;
@@ -135,96 +126,86 @@ function parseSalesReport(rawText: string) {
     NumPersonaVtas: string;
   }> = [];
 
-  // We'll match each store chunk in the entire text
-  let match: RegExpExecArray | null;
-  while ((match = storeRegex.exec(singleLine)) !== null) {
-    const [_, sucursalID, sucursalName, storeBlock] = match;
+  let currentSucursalID = "";
+  let currentSucursalName = "";
 
-    // Now parse all EAN lines within this chunk
-    const eanEntries = parseEANLines(sucursalID, sucursalName, storeBlock);
-    rows.push(...eanEntries);
+  // Helper to skip empty lines and return the next non-empty line or null
+  function readNextNonEmptyLine() {
+    while (i < lines.length) {
+      const line = lines[i];
+      i++;
+      if (line) return line;
+    }
+    return null;
+  }
+
+  while (i < lines.length) {
+    const line = lines[i];
+    i++;
+
+    // Skip empty lines
+    if (!line) continue;
+
+    // If line == "Sucursal", read the next lines for ID and name
+    if (line.toLowerCase() === "sucursal") {
+      const sucID = readNextNonEmptyLine();
+      if (sucID) {
+        currentSucursalID = sucID;
+      }
+
+      // The next non-empty line might be e.g. "( ECI GOYA 0003 )"
+      const sucName = readNextNonEmptyLine();
+      if (sucName) {
+        // remove parentheses if present
+        currentSucursalName = sucName.replace(/^\(|\)$/g, "").trim();
+      }
+      continue;
+    }
+
+    // If line == "EAN", then read EAN code, Importe, Cantidad, optional persona line
+    if (line.toLowerCase() === "ean") {
+      const eanCode = readNextNonEmptyLine() || "";
+      const importe = readNextNonEmptyLine() || "";
+      const qty = readNextNonEmptyLine() || "";
+
+      // Attempt to read next line for persona, but if it doesn't start with "Num. Persona Vtas:", revert
+      let personaLine = readNextNonEmptyLine();
+      let numPersona = "";
+      if (personaLine && personaLine.startsWith("Num. Persona Vtas:")) {
+        const match = personaLine.match(/Num\. Persona Vtas:\s*(\S+)/);
+        if (match) {
+          numPersona = match[1];
+        }
+      } else {
+        // not a persona line, push i back
+        if (personaLine) {
+          i--;
+        }
+      }
+
+      // If there's an EAN code, store the row
+      if (eanCode) {
+        rows.push({
+          SucursalID: currentSucursalID,
+          SucursalName: currentSucursalName,
+          EAN: eanCode,
+          CantidadVendida: qty,
+          Importe: importe,
+          NumPersonaVtas: numPersona,
+        });
+      }
+
+      continue;
+    }
+
+    // Otherwise, we ignore lines like "Pto Venta", "Dpto", "Periodo Venta", etc.
   }
 
   return rows;
 }
 
 /**
- * parseEANLines
- * Within a single store block, find lines like:
- *   "8437021807011 119,763 ... maybe more text..."
- * Then parse out EAN, Importe, CantidadVendida, optional "Num. Persona Vtas: X".
- */
-function parseEANLines(sucursalID: string, sucursalName: string, storeBlock: string) {
-  const eanRegex = new RegExp(
-    // 13 digits, then some spaces, then a numeric block
-    `(\\d{13})\\s+([\\d.,]+)
-     (?:      # Optional "Num. Persona Vtas:" after some text
-       (?!Sucursal\\s+\\d{13})  # but not if a new Sucursal starts
-       [^\\dN]*(Num\\. Persona Vtas:\\s*(\\S+))?
-     )?`,
-    "gix"
-  );
-
-  // We'll find all EAN lines
-  const results: Array<{
-    SucursalID: string;
-    SucursalName: string;
-    EAN: string;
-    CantidadVendida: string;
-    Importe: string;
-    NumPersonaVtas: string;
-  }> = [];
-
-  let m: RegExpExecArray | null;
-  while ((m = eanRegex.exec(storeBlock)) !== null) {
-    const ean = m[1];
-    const comboVal = m[2]; // e.g. "119,763"
-    const personaFullStr = m[3] || ""; // "Num. Persona Vtas: 000000" or undefined
-    const personaCaptured = m[4] || ""; // just the code after "Num. Persona Vtas:"
-
-    // Parse the combined number (e.g. "119,763") => {importe: "119.76", quantity: "3"}
-    const { importe, quantity } = parseImporteAndQuantity(comboVal);
-
-    results.push({
-      SucursalID: sucursalID,
-      SucursalName: sucursalName,
-      EAN: ean,
-      CantidadVendida: quantity,
-      Importe: importe,
-      NumPersonaVtas: personaCaptured, // e.g. "0051258002"
-    });
-  }
-
-  return results;
-}
-
-/**
- * parseImporteAndQuantity("119,763") => { importe: "119.76", quantity: "3" }
- * parseImporteAndQuantity("49,91") => { importe: "49.91", quantity: "1" }
- */
-function parseImporteAndQuantity(value: string) {
-  // remove thousand separators if any
-  const cleaned = value.replace(/\./g, "");
-  const [intPart, rest] = cleaned.split(",");
-  if (!intPart || !rest) {
-    // fallback
-    return { importe: cleaned, quantity: "1" };
-  }
-  if (rest.length > 2) {
-    return {
-      importe: `${intPart}.${rest.slice(0, 2)}`,
-      quantity: rest.slice(2),
-    };
-  } else {
-    return {
-      importe: `${intPart}.${rest}`,
-      quantity: "1",
-    };
-  }
-}
-
-/**
- * buildCSV(rows)
+ * buildCSV
  * Takes the array of row objects and converts them into a CSV string
  */
 function buildCSV(
@@ -240,12 +221,12 @@ function buildCSV(
   const header = CSV_HEADERS.join(",");
   const lines = rows.map((r) => {
     return [
-      r.SucursalID,
+      `"${r.SucursalID}"`,
       `"${r.SucursalName}"`,
-      r.EAN,
-      r.CantidadVendida,
-      r.Importe,
-      r.NumPersonaVtas,
+      `"${r.EAN}"`,
+      `"${r.CantidadVendida}"`,
+      `"${r.Importe}"`,
+      `"${r.NumPersonaVtas}"`,
     ].join(",");
   });
   return header + "\n" + lines.join("\n");
