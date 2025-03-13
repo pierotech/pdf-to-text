@@ -42,10 +42,9 @@ app.post("/upload", async (c) => {
     return c.text("Please upload a PDF file.", 400);
   }
 
-  // (1) Convert file to ArrayBuffer
+  // 1) Convert file to ArrayBuffer
   const buffer = await (file as any).arrayBuffer();
-
-  // (2) Extract text using unpdf
+  // 2) Extract text using unpdf
   const pdf = await getDocumentProxy(new Uint8Array(buffer));
   const result = await extractText(pdf, { mergePages: true });
 
@@ -54,30 +53,29 @@ app.post("/upload", async (c) => {
     ? result.text.join("\n")
     : result.text;
 
-  // **** DEBUG: Log the entire raw text in the console (Workers KV logs) to see if it's as expected ****
-  console.log("=== PDF EXTRACTED TEXT START ===\n", rawText, "\n=== PDF EXTRACTED TEXT END ===");
+  // (Optional) Debug: see if the extracted text is as you expect
+  console.log("=== EXTRACTED TEXT START ===");
+  console.log(rawText);
+  console.log("=== EXTRACTED TEXT END ===");
 
-  // (3) Parse raw text into structured rows
+  // 3) Parse raw text into structured rows
   const rows = parseSalesReport(rawText);
 
-  // **** DEBUG: If no rows, also log the line-by-line view so you can see exactly how it was split ****
+  // If no rows, let's log a small warning
   if (!rows.length) {
-    console.log("No rows were parsed. Let's see line-by-line...");
-    rawText.split(/\r?\n/).forEach((line, idx) => {
-      console.log(`${idx + 1}:`, line);
-    });
+    console.log("WARNING: No rows parsed from PDF. Possibly the text structure doesn't match the regex.");
   }
 
-  // (4) Convert rows to CSV
+  // 4) Convert rows to CSV
   const csvString = buildCSV(rows);
 
-  // (5) Store CSV in R2 bucket
+  // 5) Store CSV in R2 bucket
   const key = crypto.randomUUID() + ".csv";
   await c.env.BUCKET.put(key, new TextEncoder().encode(csvString), {
     httpMetadata: { contentType: "text/csv" },
   });
 
-  // (6) Return a link to download the CSV
+  // 6) Return a link to download the CSV
   const filePath = `/file/${key}`;
   return c.html(`
     <p>CSV generated! <a href="${filePath}">Download here</a>.</p>
@@ -105,22 +103,28 @@ export default app;
 /**
  * parseSalesReport(rawText)
  *
- * *IMPORTANT:* This logic expects lines like:
- *    Sucursal   8422416200034  ( ECI GOYA 0003 ) ...
- *    8437021807011 49,91
- *    Num. Persona Vtas:  0051258002
- *
- * If your extracted text is different (e.g. broken across lines, missing parentheses, etc.),
- * you'll need to adjust the regex or line handling accordingly.
+ * 1) Join all lines into a single string (no \n or \r).
+ * 2) Use a chunk-based regex to find each Sucursal block.
+ *    The chunk goes from "Sucursal <13digits>" up to the next "Sucursal <13digits>" or end of text.
+ * 3) Extract the SucursalID, SucursalName, then parse EAN lines inside that chunk with a separate regex.
+ * 4) For each EAN line, parse out EAN (13 digits), Importe, CantidadVendida, optional "Num. Persona Vtas:".
  */
 function parseSalesReport(rawText: string) {
-  const lines = rawText
-    .split(/\r?\n/)
-    .map((l) => l.trim())
-    .filter(Boolean);
+  // Re-join everything into one line, removing line breaks & extra spaces.
+  const singleLine = rawText.replace(/\s*\r?\n\s*/g, " ");
 
-  let currentSucursalID = "";
-  let currentSucursalName = "";
+  // The store-chunk regex:
+  // - "Sucursal\s+(\d{13})" => captures the store's 13-digit code
+  // - ".*?\(\s*([^)]*?)\s*\)" => captures the text in parentheses as the store name
+  // - Then "(.*?)" => lazily captures everything up to the next Sucursal or end-of-string
+  const storeRegex = new RegExp(
+    //  1) "Sucursal" + some whitespace + 13 digits
+    //  2) Possibly other text up to "("
+    //  3) Capture parentheses content as store name
+    //  4) Then capture everything else lazily, stopping at next "Sucursal <13digits>" or end
+    `Sucursal\\s+(\\d{13}).*?\$begin:math:text$\\\\s*([^)]*?)\\\\s*\\$end:math:text$([\\s\\S]*?)(?=Sucursal\\s+\\d{13}|$)`,
+    "gi"
+  );
 
   const rows: Array<{
     SucursalID: string;
@@ -131,54 +135,67 @@ function parseSalesReport(rawText: string) {
     NumPersonaVtas: string;
   }> = [];
 
-  // Regex to match a line with "Sucursal <13digits> ( <text> )"
-  // e.g.: "Sucursal   8422416200034         ( ECI GOYA 0003 ) 263 09/03/2025"
-  const sucursalRegex = /^Sucursal\s+(\d{13})\s*\(\s*([^)]*)\s*\)/i;
+  // We'll match each store chunk in the entire text
+  let match: RegExpExecArray | null;
+  while ((match = storeRegex.exec(singleLine)) !== null) {
+    const [_, sucursalID, sucursalName, storeBlock] = match;
 
-  // Regex to match a line that starts with 13 digits (the EAN), then a numeric block
-  // e.g.: "8437021807011 119,763"
-  const eanRegex = /^(\d{13})\s+([\d.,]+)/;
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-
-    // (A) Check if it's a Sucursal line
-    const sm = line.match(sucursalRegex);
-    if (sm) {
-      currentSucursalID = sm[1];
-      currentSucursalName = sm[2];
-      continue;
-    }
-
-    // (B) Check if it's an EAN line
-    const em = line.match(eanRegex);
-    if (em) {
-      const ean = em[1];
-      const combined = em[2]; // e.g. "49,91" or "119,763"
-      const { importe, quantity } = parseImporteAndQuantity(combined);
-
-      // If next line is "Num. Persona Vtas:"
-      let persona = "";
-      if (i + 1 < lines.length && lines[i + 1].includes("Num. Persona Vtas:")) {
-        const pm = lines[i + 1].match(/Num\. Persona Vtas:\s*(\S+)/);
-        if (pm) {
-          persona = pm[1];
-        }
-        i++; // consume that line
-      }
-
-      rows.push({
-        SucursalID: currentSucursalID,
-        SucursalName: currentSucursalName,
-        EAN: ean,
-        CantidadVendida: quantity,
-        Importe: importe,
-        NumPersonaVtas: persona,
-      });
-    }
+    // Now parse all EAN lines within this chunk
+    const eanEntries = parseEANLines(sucursalID, sucursalName, storeBlock);
+    rows.push(...eanEntries);
   }
 
   return rows;
+}
+
+/**
+ * parseEANLines
+ * Within a single store block, find lines like:
+ *   "8437021807011 119,763 ... maybe more text..."
+ * Then parse out EAN, Importe, CantidadVendida, optional "Num. Persona Vtas: X".
+ */
+function parseEANLines(sucursalID: string, sucursalName: string, storeBlock: string) {
+  const eanRegex = new RegExp(
+    // 13 digits, then some spaces, then a numeric block
+    `(\\d{13})\\s+([\\d.,]+)
+     (?:      # Optional "Num. Persona Vtas:" after some text
+       (?!Sucursal\\s+\\d{13})  # but not if a new Sucursal starts
+       [^\\dN]*(Num\\. Persona Vtas:\\s*(\\S+))?
+     )?`,
+    "gix"
+  );
+
+  // We'll find all EAN lines
+  const results: Array<{
+    SucursalID: string;
+    SucursalName: string;
+    EAN: string;
+    CantidadVendida: string;
+    Importe: string;
+    NumPersonaVtas: string;
+  }> = [];
+
+  let m: RegExpExecArray | null;
+  while ((m = eanRegex.exec(storeBlock)) !== null) {
+    const ean = m[1];
+    const comboVal = m[2]; // e.g. "119,763"
+    const personaFullStr = m[3] || ""; // "Num. Persona Vtas: 000000" or undefined
+    const personaCaptured = m[4] || ""; // just the code after "Num. Persona Vtas:"
+
+    // Parse the combined number (e.g. "119,763") => {importe: "119.76", quantity: "3"}
+    const { importe, quantity } = parseImporteAndQuantity(comboVal);
+
+    results.push({
+      SucursalID: sucursalID,
+      SucursalName: sucursalName,
+      EAN: ean,
+      CantidadVendida: quantity,
+      Importe: importe,
+      NumPersonaVtas: personaCaptured, // e.g. "0051258002"
+    });
+  }
+
+  return results;
 }
 
 /**
@@ -189,9 +206,11 @@ function parseImporteAndQuantity(value: string) {
   // remove thousand separators if any
   const cleaned = value.replace(/\./g, "");
   const [intPart, rest] = cleaned.split(",");
-  if (!intPart || !rest) return { importe: cleaned, quantity: "1" };
+  if (!intPart || !rest) {
+    // fallback
+    return { importe: cleaned, quantity: "1" };
+  }
   if (rest.length > 2) {
-    // e.g. "76" + "3" => => "76" => quantity=3
     return {
       importe: `${intPart}.${rest.slice(0, 2)}`,
       quantity: rest.slice(2),
@@ -205,7 +224,7 @@ function parseImporteAndQuantity(value: string) {
 }
 
 /**
- * buildCSV
+ * buildCSV(rows)
  * Takes the array of row objects and converts them into a CSV string
  */
 function buildCSV(
