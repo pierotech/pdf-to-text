@@ -111,7 +111,7 @@ function parseSalesReport(rawText: string) {
   lines.forEach((l, idx) => console.log(`${idx}: [${l}]`));
   
   // 1) Break the big text into lines
-  const lines = rawText.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  // const lines = rawText.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
 
   // We'll accumulate results here
   const rows: Array<{
