@@ -105,6 +105,11 @@ export default app;
  *  3) Return an array of row objects, each representing a single line in the final CSV
  */
 function parseSalesReport(rawText: string) {
+
+  console.log("---- RAW TEXT ----\n", rawText);
+  const lines = rawText.split(/\r?\n/).map((l) => l.trim());
+  lines.forEach((l, idx) => console.log(`${idx}: [${l}]`));
+  
   // 1) Break the big text into lines
   const lines = rawText.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
 
