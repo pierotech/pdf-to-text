@@ -1,9 +1,13 @@
 name = "pdf-to-text"
-compatibility_date = "2023-12-01"
+compatibility_date = "2024-11-11"
 
 [[r2_buckets]]
 binding = "BUCKET"
 bucket_name = "olistic-pdf-edi"
+
+[observability.logs]
+enabled = true
+
 
 # [vars]
 # MY_VAR = "my-variable"
