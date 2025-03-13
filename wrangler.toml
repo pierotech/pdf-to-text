@@ -3,7 +3,7 @@ compatibility_date = "2023-12-01"
 
 [[r2_buckets]]
 binding = "BUCKET"
-bucket_name = "pdf-to-text-dev"
+bucket_name = "olistic-pdf-edi"
 
 # [vars]
 # MY_VAR = "my-variable"
