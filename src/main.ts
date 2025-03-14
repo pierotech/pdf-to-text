@@ -64,18 +64,22 @@ app.post("/upload", async (c) => {
           role: "system",
           content:
             "You are a data extraction assistant. You must strictly format the output as a JSON array with the following structure:\n\n" +
-            "{\n" +
-            '  "SucursalID": "string",\n' +
-            '  "SucursalName": "string",\n' +
-            '  "EAN": "string",\n' +
-            '  "CantidadVendida": "integer",\n' +
-            '  "Importe": "float",\n' +
-            '  "NumPersonaVtas": "string"\n' +
-            "}\n\n" +
+            "```json\n" +
+            "[\n" +
+            "  {\n" +
+            '    "SucursalID": "string",\n' +
+            '    "SucursalName": "string",\n' +
+            '    "EAN": "string",\n' +
+            '    "CantidadVendida": "integer",\n' +
+            '    "Importe": "float",\n' +
+            '    "NumPersonaVtas": "string"\n' +
+            "  }\n" +
+            "]\n" +
+            "```\n\n" +
             "Ensure that:\n" +
             "- Each item in the array represents a sales record.\n" +
             "- All fields are correctly extracted.\n" +
-            "- Do not include explanations or additional text, only return valid JSON.",
+            "- Do not include explanations or additional text, only return valid JSON inside triple backticks.",
         },
         {
           role: "user",
@@ -90,11 +94,10 @@ Please extract the data and return a valid JSON array formatted exactly as descr
       ];
 
       const chatBody = {
-        model: "gpt-4",
+        model: "gpt-4-turbo", // ✅ Use Turbo for better JSON accuracy
         messages,
         temperature: 0,
         max_tokens: 1500, // 🔥 Allow for a larger structured JSON output
-        response_format: { "type": "json_object" }
       };
 
       const response = await fetch(openaiUrl, {
@@ -113,7 +116,7 @@ Please extract the data and return a valid JSON array formatted exactly as descr
       }
 
       const completion = await response.json();
-      const jsonData = completion?.choices?.[0]?.message?.content;
+      const jsonData = extractJsonFromResponse(completion?.choices?.[0]?.message?.content);
       allJsonData.push(...JSON.parse(jsonData));
     }
 
@@ -137,6 +140,12 @@ Please extract the data and return a valid JSON array formatted exactly as descr
     return c.text(`Error processing file: ${error.message}`, 500);
   }
 });
+
+// Function to extract JSON from OpenAI response
+function extractJsonFromResponse(responseText: string): string {
+  const match = responseText.match(/```json\n([\s\S]+?)\n```/);
+  return match ? match[1] : responseText;
+}
 
 // Function to split text into chunks based on "Sucursal"
 function splitTextBySucursal(text: string, maxTokens: number): string[] {
