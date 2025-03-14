@@ -49,7 +49,7 @@ app.post("/upload", async (c) => {
       httpMetadata: { contentType: "text/plain" },
     });
 
-    // 4) Split text into chunks based on "Sucursal" for structured parsing
+    // 4) Smart split based on "Sucursal"
     const CHUNK_SIZE = 4000;
     const textChunks = splitTextBySucursal(textContent, CHUNK_SIZE);
 
@@ -137,5 +137,50 @@ Please extract the data and return a valid JSON array formatted exactly as descr
     return c.text(`Error processing file: ${error.message}`, 500);
   }
 });
+
+// Function to split text into chunks based on "Sucursal"
+function splitTextBySucursal(text: string, maxTokens: number): string[] {
+  const lines = text.split("\n");
+  let chunks: string[] = [];
+  let currentChunk: string[] = [];
+  let currentSize = 0;
+
+  for (const line of lines) {
+    if (line.toLowerCase().startsWith("sucursal") && currentSize > 0) {
+      if (currentSize >= maxTokens) {
+        chunks.push(currentChunk.join("\n"));
+        currentChunk = [];
+        currentSize = 0;
+      }
+    }
+
+    currentChunk.push(line);
+    currentSize += line.split(" ").length;
+  }
+
+  if (currentChunk.length > 0) {
+    chunks.push(currentChunk.join("\n"));
+  }
+
+  return chunks;
+}
+
+// Function to convert JSON to CSV
+function convertJsonToCsv(jsonData: any[]): string {
+  const CSV_HEADERS = "SucursalID,SucursalName,EAN,CantidadVendida,Importe,NumPersonaVtas";
+
+  const csvRows = jsonData.map((record) => {
+    return [
+      `"${record.SucursalID}"`,
+      `"${record.SucursalName}"`,
+      `"${record.EAN}"`,
+      record.CantidadVendida,
+      record.Importe.toFixed(2),
+      `"${record.NumPersonaVtas}"`,
+    ].join(",");
+  });
+
+  return CSV_HEADERS + "\n" + csvRows.join("\n");
+}
 
 export default app;
