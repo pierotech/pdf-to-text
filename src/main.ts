@@ -44,8 +44,8 @@ app.post("/upload", async (c) => {
     ? result.text.join("\n")
     : result.text;
 
-  // 2) Normalize multi-line Sucursal Names before sending to OpenAI
-  textContent = normalizeSucursalNames(textContent);
+  // 2) Pre-process the text to optimize token usage & improve OpenAI parsing
+  textContent = preprocessExtractedText(textContent);
 
   // 3) Send cleaned text to OpenAI for CSV conversion
   const OPENAI_API_KEY = c.env.OPENAI_API_KEY;
@@ -142,17 +142,26 @@ app.get("/file/:key", async (c) => {
 export default app;
 
 /**
- * **Normalize Sucursal Names**
- * - Removes unwanted **newlines** inside parentheses `()`
- * - Ensures that multi-line Sucursal Names are joined into a single line
- * - Example:
- *   ( ECI
- *     C.C.SERRANO, 47
- *     0906 )
- *   -> ( ECI C.C.SERRANO, 47 0906 )
+ * **Pre-process extracted text to reduce token usage**
+ * - Removes unnecessary blank lines.
+ * - Merges broken Sucursal Names into a single line.
+ * - Keeps only relevant sales data.
  */
-function normalizeSucursalNames(text: string): string {
-  return text.replace(/\(\s*([\s\S]*?)\s*\)/g, (match, inner) => {
+function preprocessExtractedText(text: string): string {
+  // (1) Remove excessive whitespace & normalize spaces
+  let cleanedText = text.replace(/\s+/g, " ").trim();
+
+  // (2) Normalize multi-line Sucursal Names (joins lines inside parentheses)
+  cleanedText = cleanedText.replace(/\(\s*([\s\S]*?)\s*\)/g, (match, inner) => {
     return `(${inner.replace(/\s*\n\s*/g, " ")})`;
   });
+
+  // (3) Keep only relevant sales data
+  // Assuming sales data always contains "Sucursal", "EAN", "CantidadVendida", or "Importe"
+  const lines = cleanedText.split("\n");
+  const relevantLines = lines.filter(line =>
+    line.match(/Sucursal|EAN|CantidadVendida|Importe|Num\. Persona Vtas/i)
+  );
+
+  return relevantLines.join("\n"); // Return cleaned, relevant text
 }
