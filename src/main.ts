@@ -130,22 +130,16 @@ Rules:
 
 // Function to clean CSV output and ensure only correct columns are kept
 function cleanCsvOutput(csvData: string): string {
-  const expectedHeaders = [
-    "SucursalID",
-    "SucursalName",
-    "EAN",
-    "CantidadVendida",
-    "Importe",
-    "NumPersonaVtas",
-  ];
+  const expectedHeaders = "SucursalID,SucursalName,EAN,CantidadVendida,Importe,NumPersonaVtas";
 
-  const rows = csvData.trim().split("\n");
-  const cleanRows = rows.filter((row, index) => {
-    const values = row.split(",");
-    return index === 0 || values.length === expectedHeaders.length; // Keep only valid rows
+  let rows = csvData.trim().split("\n");
+
+  // Remove any duplicate headers (if OpenAI added them again)
+  rows = rows.filter((row, index) => {
+    return index === 0 || row !== expectedHeaders;
   });
 
-  return cleanRows.join("\n");
+  return rows.join("\n");
 }
 
 // Route to retrieve stored files
