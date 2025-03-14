@@ -49,21 +49,33 @@ app.post("/upload", async (c) => {
       httpMetadata: { contentType: "text/plain" },
     });
 
-    // 4) Smart split based on `SucursalID`
+    // 4) Split text into chunks based on "Sucursal" for structured parsing
     const CHUNK_SIZE = 4000;
-    const textChunks = splitTextBySucursalID(textContent, CHUNK_SIZE);
+    const textChunks = splitTextBySucursal(textContent, CHUNK_SIZE);
 
     const OPENAI_API_KEY = c.env.OPENAI_API_KEY;
     const openaiUrl = "https://api.openai.com/v1/chat/completions";
 
-    let allCsvData = [];
+    let allJsonData: any[] = [];
 
     for (const chunk of textChunks) {
       const messages = [
         {
           role: "system",
           content:
-            "You are a data extraction assistant. You must strictly format the output as CSV with exactly these columns: SucursalID, SucursalName, EAN, CantidadVendida, Importe, NumPersonaVtas.",
+            "You are a data extraction assistant. You must strictly format the output as a JSON array with the following structure:\n\n" +
+            "{\n" +
+            '  "SucursalID": "string",\n' +
+            '  "SucursalName": "string",\n' +
+            '  "EAN": "string",\n' +
+            '  "CantidadVendida": "integer",\n' +
+            '  "Importe": "float",\n' +
+            '  "NumPersonaVtas": "string"\n' +
+            "}\n\n" +
+            "Ensure that:\n" +
+            "- Each item in the array represents a sales record.\n" +
+            "- All fields are correctly extracted.\n" +
+            "- Do not include explanations or additional text, only return valid JSON.",
         },
         {
           role: "user",
@@ -72,14 +84,7 @@ Extracted text from a PDF sales report:
 
 ${chunk}
 
-Please generate a CSV file with only these columns:
-SucursalID, SucursalName, EAN, CantidadVendida, Importe, NumPersonaVtas
-
-Rules:
-- Do not add extra columns.
-- Ensure all values are correctly aligned under their respective headers.
-- The output should be formatted exactly as a CSV.
-- Do not include explanations, only output the CSV content.
+Please extract the data and return a valid JSON array formatted exactly as described in the system instructions.
           `,
         },
       ];
@@ -88,7 +93,8 @@ Rules:
         model: "gpt-4",
         messages,
         temperature: 0,
-        max_tokens: 1000,
+        max_tokens: 1500, // 🔥 Allow for a larger structured JSON output
+        response_format: "json",
       };
 
       const response = await fetch(openaiUrl, {
@@ -107,12 +113,12 @@ Rules:
       }
 
       const completion = await response.json();
-      let csvChunk = completion?.choices?.[0]?.message?.content || "";
-      allCsvData.push(csvChunk);
+      const jsonData = completion?.choices?.[0]?.message?.content;
+      allJsonData.push(...JSON.parse(jsonData));
     }
 
-    // 5) Merge all CSV parts and clean duplicates
-    let finalCsvOutput = mergeCsvChunks(allCsvData);
+    // 5) Convert JSON to CSV
+    const finalCsvOutput = convertJsonToCsv(allJsonData);
 
     // 6) Store the CSV in R2
     const csvKey = crypto.randomUUID() + ".csv";
@@ -130,66 +136,6 @@ Rules:
     console.error("Server Error:", error);
     return c.text(`Error processing file: ${error.message}`, 500);
   }
-});
-
-// Function to split text into chunks based on `SucursalID`
-function splitTextBySucursalID(text: string, maxTokens: number): string[] {
-  const lines = text.split("\n");
-  let chunks = [];
-  let currentChunk = [];
-  let currentSize = 0;
-
-  for (const line of lines) {
-    if (line.match(/^\d{13}$/) && currentSize > 0) {
-      // New `SucursalID` found, start a new chunk if size is exceeded
-      if (currentSize >= maxTokens) {
-        chunks.push(currentChunk.join("\n"));
-        currentChunk = [];
-        currentSize = 0;
-      }
-    }
-
-    currentChunk.push(line);
-    currentSize += line.split(" ").length;
-  }
-
-  if (currentChunk.length > 0) {
-    chunks.push(currentChunk.join("\n"));
-  }
-
-  return chunks;
-}
-
-// Function to merge CSV parts and ensure only one header set
-function mergeCsvChunks(csvChunks: string[]): string {
-  const CSV_HEADERS = "SucursalID,SucursalName,EAN,CantidadVendida,Importe,NumPersonaVtas";
-  let allRows = csvChunks.flatMap((csv) => csv.trim().split("\n"));
-  
-  // Remove duplicate headers
-  allRows = allRows.filter((row, index) => index === 0 || row !== CSV_HEADERS);
-
-  return CSV_HEADERS + "\n" + allRows.join("\n");
-}
-
-// Route to retrieve stored files
-app.get("/file/:key", async (c) => {
-  const key = c.req.param("key");
-  const object = await c.env.BUCKET.get(key);
-  if (!object) {
-    return c.text("File not found in R2 storage.", 404);
-  }
-
-  const extension = key.split(".").pop()?.toLowerCase() || "";
-  let contentType = "text/plain";
-  if (extension === "csv") {
-    contentType = "text/csv";
-  }
-
-  const data = await object.arrayBuffer();
-  return c.body(data, 200, {
-    "Content-Type": contentType,
-    "Cache-Control": "public, max-age=86400",
-  });
 });
 
 export default app;
