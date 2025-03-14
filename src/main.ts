@@ -3,28 +3,36 @@ import { basicAuth } from "hono/basic-auth";
 import { getDocumentProxy, extractText } from "unpdf";
 import index from "./index.html";
 
-// Add OPENAI_API_KEY to your Worker’s Environment Variables
+// We'll define the CSV column headers
+const CSV_HEADERS = [
+  "SucursalID",
+  "SucursalName",
+  "EAN",
+  "CantidadVendida",
+  "Importe",
+  "NumPersonaVtas",
+];
+
 type Bindings = {
   BUCKET: R2Bucket;
-  USER: string;
-  PASS: string;
-  OPENAI_API_KEY: string;
+  USER: string; // for basicAuth
+  PASS: string; // for basicAuth
 };
 
 const app = new Hono<{ Bindings: Bindings }>();
 
-// Apply basic authentication to all routes
+// Basic auth for all routes
 app.use("*", basicAuth({ username: "USER", password: "PASS" }));
 
 // Serve an HTML form for PDF uploads
-app.get("/", (c) => c.html(index));
+app.get("/", (c) => {
+  return c.html(index);
+});
 
-// Handle PDF uploads
 app.post("/upload", async (c) => {
   const formData = await c.req.formData();
   const file = formData.get("pdf");
 
-  // Validate the file
   if (
     !file ||
     typeof file !== "object" ||
@@ -34,107 +42,48 @@ app.post("/upload", async (c) => {
     return c.text("Please upload a PDF file.", 400);
   }
 
-  // 1) Convert PDF to text using unpdf
+  // 1) Convert file to ArrayBuffer
   const buffer = await (file as any).arrayBuffer();
+  // 2) Extract text using unpdf
   const pdf = await getDocumentProxy(new Uint8Array(buffer));
   const result = await extractText(pdf, { mergePages: true });
 
   // unify text
-  let textContent = Array.isArray(result.text)
+  const rawText = Array.isArray(result.text)
     ? result.text.join("\n")
     : result.text;
 
-  // 2) Pre-process text before sending it to OpenAI
-  textContent = preprocessExtractedText(textContent);
+  // 3) Parse raw text into structured rows
+  const rows = parseSalesReport(rawText);
 
-  // 3) Send cleaned text to OpenAI for CSV conversion
-  const OPENAI_API_KEY = c.env.OPENAI_API_KEY;
-  const openaiUrl = "https://api.openai.com/v1/chat/completions";
+  // 4) Convert rows to CSV
+  const csvString = buildCSV(rows);
 
-  const messages = [
-    {
-      role: "system",
-      content:
-        "You are a helpful assistant that converts extracted text from a PDF sales report into structured CSV data.",
-    },
-    {
-      role: "user",
-      content: `
-Here is the text extracted from a PDF daily sales report. 
-Please parse and return only CSV lines with the columns:
-SucursalID,SucursalName,EAN,CantidadVendida,Importe,NumPersonaVtas
-
-Ensure:
-- Each value is separated by commas
-- SucursalName is correctly formatted without extra line breaks
-- The output contains no extra text, only pure CSV rows
-
-${textContent}
-      `,
-    },
-  ];
-
-  const chatBody = {
-    model: "gpt-4", // or "gpt-3.5-turbo" if needed
-    messages,
-    temperature: 0,
-    max_tokens: 2000,
-  };
-
-  const response = await fetch(openaiUrl, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${OPENAI_API_KEY}`,
-    },
-    body: JSON.stringify(chatBody),
-  });
-
-  if (!response.ok) {
-    const err = await response.text();
-    return c.text(`OpenAI API error: ${err}`, 500);
-  }
-
-  const completion = await response.json();
-  const rawCsvOutput = completion?.choices?.[0]?.message?.content || "";
-
-  // 4) Store the CSV in R2
-  const csvKey = crypto.randomUUID() + ".csv";
-  await c.env.BUCKET.put(csvKey, new TextEncoder().encode(rawCsvOutput), {
+  // 5) Store CSV in R2 bucket
+  const key = crypto.randomUUID() + ".csv";
+  await c.env.BUCKET.put(key, new TextEncoder().encode(csvString), {
     httpMetadata: { contentType: "text/csv" },
   });
 
-  // 5) Also store the cleaned raw text for reference
-  const txtKey = csvKey.replace(".csv", ".txt");
-  await c.env.BUCKET.put(txtKey, new TextEncoder().encode(textContent), {
-    httpMetadata: { contentType: "text/plain" },
-  });
-
-  // 6) Return an HTML response with links to download both the CSV and raw text
-  return c.html(`
-    <p>CSV generated! <a href="/file/${csvKey}">Download CSV here</a>.</p>
-    <p>Raw extracted text: <a href="/file/${txtKey}">View raw text</a>.</p>
-  `);
+  // 6) Return a link to download the CSV
+  const filePath = /file/${key};
+  return c.html(
+    <p>CSV generated! <a href="${filePath}">Download here</a>.</p>
+  );
 });
 
-// Route to retrieve stored files
+// Endpoint to download the CSV from R2
 app.get("/file/:key", async (c) => {
   const key = c.req.param("key");
   const object = await c.env.BUCKET.get(key);
   if (!object) {
     return c.text("File not found.", 404);
   }
-
-  const extension = key.split(".").pop()?.toLowerCase() || "";
-  let contentType = "text/plain";
-  if (extension === "csv") {
-    contentType = "text/csv";
-  }
-
-  // Return the file
   const data = await object.arrayBuffer();
+
   return c.body(data, 200, {
-    "Content-Type": contentType,
+    "Content-Type": "text/csv",
+    "Content-Disposition": attachment; filename="${key}",
     "Cache-Control": "public, max-age=86400",
   });
 });
@@ -142,25 +91,131 @@ app.get("/file/:key", async (c) => {
 export default app;
 
 /**
- * **Pre-process extracted text to fix nested parentheses and clean formatting**
- * - Removes unnecessary blank lines.
- * - Fixes multi-line Sucursal Names inside **nested parentheses**.
- * - Keeps only relevant sales data.
+ * parseSalesReport(rawText)
+ *
+ * Based on the sample text you provided (with lines like "EAN" on one line,
+ * then the actual code on the next, etc.). We'll read line by line and capture:
+ *
+ * - Sucursal lines:
+ *      "Sucursal"
+ *      [Sucursal ID]
+ *      [( ECI NAME )]
+ *
+ * - EAN block:
+ *      "EAN"
+ *      [ean code, e.g. 8437021807011]
+ *      [Importe, e.g. 49,9]
+ *      [CantidadVendida, e.g. 1]
+ *      optional line: "Num. Persona Vtas:  XXXXX"
+ *
+ * If your text has empty lines, we skip them carefully with readNextNonEmptyLine.
  */
-function preprocessExtractedText(text: string): string {
-  // (1) Remove excessive whitespace & normalize spaces
-  let cleanedText = text.replace(/\s+/g, " ").trim();
+function parseSalesReport(rawText: string) {
+  const allLines = rawText.split(/\r?\n/);
+  const lines = allLines.map((l) => l.trim());
+  let i = 0;
+  const rows: Array<{
+    SucursalID: string;
+    SucursalName: string;
+    EAN: string;
+    CantidadVendida: string;
+    Importe: string;
+    NumPersonaVtas: string;
+  }> =;
 
-  // (2) Handle nested parentheses correctly
-  cleanedText = cleanedText.replace(/\(([^()]*\([^()]*\)[^()]*)\)/g, (match, inner) => {
-    return `(${inner.replace(/\s*\n\s*/g, " ")})`;
+  function readNextNonEmptyLine(): string | null {
+    while (i < lines.length) {
+      const line = lines[i];
+      i++;
+      if (line) return line;
+    }
+    return null;
+  }
+
+  while (i < lines.length) {
+    let line = lines[i];
+    i++;
+
+    if (!line) continue;
+
+    if (line.startsWith("Sucursal")) {
+      const sucursalID = readNextNonEmptyLine() || "";
+      let sucursalName = readNextNonEmptyLine() || "";
+
+      // Extract SucursalName from Pto Venta lines
+      if (sucursalName.startsWith("Pto Venta")) {
+        sucursalName = lines[i++] || ""; // Get the next line
+        sucursalName = sucursalName.replace(/^\(|\)$/g, "").trim();
+      }
+
+      let ean: string | null = null;
+      let cantidadVendida: string | null = null;
+      let importe: string | null = null;
+      let numPersonaVtas: string | null = null;
+
+      // Check for EAN table
+      if (lines[i] && (lines[i].includes("EAN") || lines[i].includes("Ref. ECI"))) {
+        i++; // Skip header line
+
+        while (i < lines.length && lines[i] && !lines[i].startsWith("Cantidad Uds.")) {
+          let dataLine = lines[i++];
+          if (!dataLine) continue;
+
+          const values = dataLine.split(",").map(v => v.trim());
+
+          if (values && values.length > 0) {
+            ean = values[0] || null;
+            cantidadVendida = values[2] || null;
+            importe = values[7] ? values[7].replace(",", ".") : null; // Normalize decimal
+
+            // Check next line for Num. Persona Vtas
+            if (lines[i] && lines[i].startsWith("Num. Persona Vtas:")) {
+              numPersonaVtas = lines[i].split(":")[1]?.trim() || null;
+              i++;
+            }
+
+            if (ean && cantidadVendida && importe) {
+              rows.push({
+                SucursalID: sucursalID,
+                SucursalName: sucursalName,
+                EAN: ean,
+                CantidadVendida: cantidadVendida,
+                Importe: importe,
+                NumPersonaVtas: numPersonaVtas || "",
+              });
+            }
+          }
+        }
+      }
+    }
+  }
+  return rows;
+}
+
+/**
+ * buildCSV
+ * Takes the array of row objects and converts them into a CSV string
+ */
+function buildCSV(
+  rows: Array<{
+    SucursalID: string;
+    SucursalName: string;
+    EAN: string;
+    CantidadVendida: string;
+    Importe: string;
+    NumPersonaVtas: string;
+  }>
+) {
+  const header = CSV_HEADERS.join(",");
+  const lines = rows.map((r) => {
+    return [
+      "${r.SucursalID}",
+      "${r.SucursalName}",
+      "${r.EAN}",
+      "${r.CantidadVendida}",
+      "${r.Importe}",
+      "${r.NumPersonaVtas}",
+    ].join(",");
   });
-
-  // (3) Keep only relevant sales data
-  const lines = cleanedText.split("\n");
-  const relevantLines = lines.filter(line =>
-    line.match(/Sucursal|EAN|CantidadVendida|Importe|Num\. Persona Vtas/i)
-  );
-
-  return relevantLines.join("\n"); // Return cleaned, relevant text
+  return header + "\n" + lines.join("\n");
 }
