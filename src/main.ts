@@ -189,15 +189,38 @@ app.post("/upload", async (c) => {
 
     // 7) Return download links for JSON, CSV, and raw extracted text
     return c.html(`
-      <p>✅ <strong>CSV generated:</strong> <a href="/file/${csvKey}">Download CSV</a></p>
-      <p>✅ <strong>JSON extracted:</strong> <a href="/file/${jsonKey}">Download JSON</a></p>
-      <p>✅ <strong>Raw extracted text:</strong> <a href="/file/${rawTxtKey}">Download TXT</a></p>
-    `);
+    <p>✅ <strong>CSV generated:</strong> <a href="/file/${csvKey}">Download CSV</a></p>
+    <p>✅ <strong>JSON extracted:</strong> <a href="/file/${jsonKey}">Download JSON</a></p>
+    <p>✅ <strong>Raw extracted text:</strong> <a href="/file/${rawTxtKey}">Download TXT</a></p>
+  `);
 
   } catch (error) {
     console.error("Server Error:", error);
     return c.text(`Error processing file: ${error.message}`, 500);
   }
+});
+
+app.get("/file/:key", async (c) => {
+  const key = c.req.param("key");
+  const object = await c.env.BUCKET.get(key);
+
+  if (!object) {
+    return c.text("❌ File not found.", 404);
+  }
+
+  const data = await object.arrayBuffer();
+
+  // Determine Content-Type
+  let contentType = "application/octet-stream"; // Default binary
+  if (key.endsWith(".json")) contentType = "application/json";
+  if (key.endsWith(".csv")) contentType = "text/csv";
+  if (key.endsWith(".txt")) contentType = "text/plain";
+
+  return c.body(data, 200, {
+    "Content-Type": contentType,
+    "Content-Disposition": `attachment; filename="${key}"`,
+    "Cache-Control": "public, max-age=86400", // 1 day caching
+  });
 });
 
 export default app;
