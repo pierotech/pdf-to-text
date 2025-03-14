@@ -47,13 +47,20 @@ app.post("/upload", async (c) => {
     textContent = preprocessExtractedText(textContent);
     textContent = replaceCommasWithDots(textContent);
 
-    // 4) Store Raw Extracted Text in R2 (for debugging)
+    // 4) **Optimize Text (Compress & Reduce Repetitions)**
+    textContent = optimizeTextForOpenAI(textContent);
+
+    // 5) Trim to Ensure We Don't Exceed OpenAI's Token Limit
+    const MAX_TOKENS_ALLOWED = 7000; // Keep buffer under 8192 limit
+    textContent = trimToMaxTokens(textContent, MAX_TOKENS_ALLOWED);
+
+    // 6) Store Raw Extracted Text in R2 (for debugging)
     const rawTxtKey = crypto.randomUUID() + ".txt";
     await c.env.BUCKET.put(rawTxtKey, new TextEncoder().encode(textContent), {
       httpMetadata: { contentType: "text/plain" },
     });
 
-    // 5) Send cleaned text to OpenAI
+    // 7) Send cleaned text to OpenAI
     const OPENAI_API_KEY = c.env.OPENAI_API_KEY;
     const openaiUrl = "https://api.openai.com/v1/chat/completions";
 
@@ -65,19 +72,7 @@ app.post("/upload", async (c) => {
       },
       {
         role: "user",
-        content: `
-Here is the text extracted from a PDF daily sales report. 
-Please parse and return only CSV lines with the columns:
-SucursalID,SucursalName,EAN,CantidadVendida,Importe,NumPersonaVtas
-
-Ensure:
-- Each value is separated by commas
-- SucursalName is correctly formatted without extra line breaks
-- Replace decimal separators correctly (use dots instead of commas)
-- The output contains no extra text, only pure CSV rows
-
-${textContent}
-        `,
+        content: `Extracted text:\n\n${textContent}`,
       },
     ];
 
@@ -85,7 +80,7 @@ ${textContent}
       model: "gpt-4",
       messages,
       temperature: 0,
-      max_tokens: 2000,
+      max_tokens: 1000, // 🔥 REDUCED FROM 2000 TO 1000
     };
 
     const response = await fetch(openaiUrl, {
@@ -106,11 +101,11 @@ ${textContent}
     const completion = await response.json();
     const rawCsvOutput = completion?.choices?.[0]?.message?.content || "";
 
-    // 6) Add Headers to the CSV before storing
+    // 8) Add Headers to the CSV before storing
     const CSV_HEADERS = "SucursalID,SucursalName,EAN,CantidadVendida,Importe,NumPersonaVtas";
     const finalCsvOutput = CSV_HEADERS + "\n" + rawCsvOutput.trim();
 
-    // 7) Store the CSV in R2
+    // 9) Store the CSV in R2
     const csvKey = crypto.randomUUID() + ".csv";
     await c.env.BUCKET.put(csvKey, new TextEncoder().encode(finalCsvOutput), {
       httpMetadata: { contentType: "text/csv" },
@@ -127,51 +122,4 @@ ${textContent}
   }
 });
 
-// Route to retrieve stored files
-app.get("/file/:key", async (c) => {
-  const key = c.req.param("key");
-  const object = await c.env.BUCKET.get(key);
-  if (!object) {
-    return c.text("File not found.", 404);
-  }
-
-  const extension = key.split(".").pop()?.toLowerCase() || "";
-  let contentType = "text/plain";
-  if (extension === "csv") {
-    contentType = "text/csv";
-  }
-
-  const data = await object.arrayBuffer();
-  return c.body(data, 200, {
-    "Content-Type": contentType,
-    "Cache-Control": "public, max-age=86400",
-  });
-});
-
 export default app;
-
-/**
- * **Pre-process extracted text to fix nested parentheses and clean formatting**
- */
-function preprocessExtractedText(text: string): string {
-  let cleanedText = text.replace(/\s+/g, " ").trim();
-
-  // Handle nested parentheses correctly
-  cleanedText = cleanedText.replace(/\(([^()]*\([^()]*\)[^()]*)\)/g, (match, inner) => {
-    return `(${inner.replace(/\s*\n\s*/g, " ")})`;
-  });
-
-  const lines = cleanedText.split("\n");
-  const relevantLines = lines.filter(line =>
-    line.match(/Sucursal|EAN|CantidadVendida|Importe|Num\. Persona Vtas/i)
-  );
-
-  return relevantLines.join("\n");
-}
-
-/**
- * **Replace commas with dots before sending text to OpenAI**
- */
-function replaceCommasWithDots(text: string): string {
-  return text.replace(/,/g, ".");
-}
