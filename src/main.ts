@@ -46,21 +46,19 @@ app.post("/upload", async (c) => {
     // 3) Pre-process text before sending it to OpenAI
     textContent = preprocessExtractedText(textContent);
     textContent = replaceCommasWithDots(textContent);
+    textContent = optimizeTextForOpenAI(textContent); // 🚀 Further reduce token count
 
-    // 4) **Optimize Text (Compress & Reduce Repetitions)**
-    textContent = optimizeTextForOpenAI(textContent);
-
-    // 5) Trim to Ensure We Don't Exceed OpenAI's Token Limit
-    const MAX_TOKENS_ALLOWED = 7000; // Keep buffer under 8192 limit
+    // 4) Trim Text to Ensure We Don't Exceed OpenAI's Token Limit
+    const MAX_TOKENS_ALLOWED = 6000; // Keep buffer under 8192 limit
     textContent = trimToMaxTokens(textContent, MAX_TOKENS_ALLOWED);
 
-    // 6) Store Raw Extracted Text in R2 (for debugging)
+    // 5) Store Raw Extracted Text in R2 (for debugging)
     const rawTxtKey = crypto.randomUUID() + ".txt";
     await c.env.BUCKET.put(rawTxtKey, new TextEncoder().encode(textContent), {
       httpMetadata: { contentType: "text/plain" },
     });
 
-    // 7) Send cleaned text to OpenAI
+    // 6) Send cleaned text to OpenAI
     const OPENAI_API_KEY = c.env.OPENAI_API_KEY;
     const openaiUrl = "https://api.openai.com/v1/chat/completions";
 
@@ -101,11 +99,11 @@ app.post("/upload", async (c) => {
     const completion = await response.json();
     const rawCsvOutput = completion?.choices?.[0]?.message?.content || "";
 
-    // 8) Add Headers to the CSV before storing
+    // 7) Add Headers to the CSV before storing
     const CSV_HEADERS = "SucursalID,SucursalName,EAN,CantidadVendida,Importe,NumPersonaVtas";
     const finalCsvOutput = CSV_HEADERS + "\n" + rawCsvOutput.trim();
 
-    // 9) Store the CSV in R2
+    // 8) Store the CSV in R2
     const csvKey = crypto.randomUUID() + ".csv";
     await c.env.BUCKET.put(csvKey, new TextEncoder().encode(finalCsvOutput), {
       httpMetadata: { contentType: "text/csv" },
@@ -123,3 +121,65 @@ app.post("/upload", async (c) => {
 });
 
 export default app;
+
+/**
+ * **Pre-process extracted text to fix nested parentheses and clean formatting**
+ */
+function preprocessExtractedText(text: string): string {
+  let cleanedText = text.replace(/\s+/g, " ").trim();
+
+  // Handle nested parentheses correctly
+  cleanedText = cleanedText.replace(/\(([^()]*\([^()]*\)[^()]*)\)/g, (match, inner) => {
+    return `(${inner.replace(/\s*\n\s*/g, " ")})`;
+  });
+
+  const lines = cleanedText.split("\n");
+  const relevantLines = lines.filter(line =>
+    line.match(/Sucursal|EAN|CantidadVendida|Importe|Num\. Persona Vtas/i)
+  );
+
+  return relevantLines.join("\n");
+}
+
+/**
+ * **Replace commas with dots before sending text to OpenAI**
+ */
+function replaceCommasWithDots(text: string): string {
+  return text.replace(/,/g, ".");
+}
+
+/**
+ * **Optimize Text Before Sending to OpenAI**
+ * - Removes excessive spaces & blank lines.
+ * - Removes consecutive duplicate words.
+ * - Shortens common phrases for token efficiency.
+ */
+function optimizeTextForOpenAI(text: string): string {
+  let optimizedText = text.replace(/\s+/g, " ").trim();
+
+  // Remove repeated words appearing consecutively
+  optimizedText = optimizedText.replace(/\b(\w+)( \1\b)+/gi, "$1");
+
+  // Replace common long words with short versions
+  const replacements: { [key: string]: string } = {
+    "Sucursal": "Suc",
+    "CantidadVendida": "Qty",
+    "Importe": "Total",
+    "Num. Persona Vtas": "Persona",
+  };
+
+  Object.keys(replacements).forEach((word) => {
+    const regex = new RegExp("\\b" + word + "\\b", "gi");
+    optimizedText = optimizedText.replace(regex, replacements[word]);
+  });
+
+  return optimizedText;
+}
+
+/**
+ * **Trims Text to Ensure it Fits OpenAI's Token Limit**
+ */
+function trimToMaxTokens(text: string, maxTokens: number): string {
+  const words = text.split(/\s+/);
+  return words.slice(0, maxTokens).join(" ");
+}
