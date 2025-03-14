@@ -104,7 +104,7 @@ Rules:
     let rawCsvOutput = completion?.choices?.[0]?.message?.content || "";
 
     // 5) Clean CSV Output to Remove Extra Columns
-    rawCsvOutput = cleanCsvOutput(rawCsvOutput);
+    //rawCsvOutput = cleanCsvOutput(rawCsvOutput);
 
     // 6) Add Headers to the CSV before storing
     const CSV_HEADERS = "SucursalID,SucursalName,EAN,CantidadVendida,Importe,NumPersonaVtas";
