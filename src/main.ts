@@ -49,7 +49,7 @@ app.post("/upload", async (c) => {
     textContent = optimizeTextForOpenAI(textContent); // 🚀 Reduce token count
 
     // 4) Trim Text to Ensure We Don't Exceed OpenAI's Token Limit
-    const MAX_TOKENS_ALLOWED = 7000; // Keep buffer under 8192 limit
+    const MAX_TOKENS_ALLOWED = 6000; // Keep buffer under 8192 limit
     textContent = trimToMaxTokens(textContent, MAX_TOKENS_ALLOWED);
 
     // 5) Store Raw Extracted Text in R2 (for debugging)
@@ -117,10 +117,6 @@ app.post("/upload", async (c) => {
       return c.text("Error: CSV file was not found after storing.", 500);
     }
 
-    // 10) Log all files in R2 for debugging
-    const objects = await c.env.BUCKET.list();
-    console.log("Stored files in R2:", objects.objects.map(o => o.key));
-
     return c.html(`
       <p>CSV generated! <a href="/file/${csvKey}">Download CSV here</a>.</p>
       <p>Raw extracted text: <a href="/file/${rawTxtKey}">View raw text</a>.</p>
@@ -132,25 +128,66 @@ app.post("/upload", async (c) => {
   }
 });
 
-// Route to retrieve stored files
-app.get("/file/:key", async (c) => {
-  const key = c.req.param("key");
-  const object = await c.env.BUCKET.get(key);
-  if (!object) {
-    return c.text("File not found in R2 storage.", 404);
-  }
-
-  const extension = key.split(".").pop()?.toLowerCase() || "";
-  let contentType = "text/plain";
-  if (extension === "csv") {
-    contentType = "text/csv";
-  }
-
-  const data = await object.arrayBuffer();
-  return c.body(data, 200, {
-    "Content-Type": contentType,
-    "Cache-Control": "public, max-age=86400",
-  });
-});
-
 export default app;
+
+/**
+ * **Pre-process extracted text to fix nested parentheses and clean formatting**
+ */
+function preprocessExtractedText(text: string): string {
+  let cleanedText = text.replace(/\s+/g, " ").trim();
+
+  // Handle nested parentheses correctly
+  cleanedText = cleanedText.replace(/\(([^()]*\([^()]*\)[^()]*)\)/g, (match, inner) => {
+    return `(${inner.replace(/\s*\n\s*/g, " ")})`;
+  });
+
+  const lines = cleanedText.split("\n");
+  const relevantLines = lines.filter(line =>
+    line.match(/Sucursal|EAN|CantidadVendida|Importe|Num\. Persona Vtas/i)
+  );
+
+  return relevantLines.join("\n");
+}
+
+/**
+ * **Replace commas with dots before sending text to OpenAI**
+ */
+function replaceCommasWithDots(text: string): string {
+  return text.replace(/,/g, ".");
+}
+
+/**
+ * **Optimize Text Before Sending to OpenAI**
+ * - Removes excessive spaces & blank lines.
+ * - Removes consecutive duplicate words.
+ * - Shortens common phrases for token efficiency.
+ */
+function optimizeTextForOpenAI(text: string): string {
+  let optimizedText = text.replace(/\s+/g, " ").trim();
+
+  // Remove repeated words appearing consecutively
+  optimizedText = optimizedText.replace(/\b(\w+)( \1\b)+/gi, "$1");
+
+  // Replace common long words with short versions
+  const replacements: { [key: string]: string } = {
+    "Sucursal": "Suc",
+    "CantidadVendida": "Qty",
+    "Importe": "Total",
+    "Num. Persona Vtas": "Persona",
+  };
+
+  Object.keys(replacements).forEach((word) => {
+    const regex = new RegExp("\\b" + word + "\\b", "gi");
+    optimizedText = optimizedText.replace(regex, replacements[word]);
+  });
+
+  return optimizedText;
+}
+
+/**
+ * **Trims Text to Ensure it Fits OpenAI's Token Limit**
+ */
+function trimToMaxTokens(text: string, maxTokens: number): string {
+  const words = text.split(/\s+/);
+  return words.slice(0, maxTokens).join(" ");
+}
