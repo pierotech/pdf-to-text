@@ -40,11 +40,14 @@ app.post("/upload", async (c) => {
   const result = await extractText(pdf, { mergePages: true });
 
   // unify text
-  const textContent = Array.isArray(result.text)
-    ? result.text.join(" ")
+  let textContent = Array.isArray(result.text)
+    ? result.text.join("\n")
     : result.text;
 
-  // 2) Send extracted text to OpenAI Chat Completion for CSV conversion
+  // 2) Normalize multi-line Sucursal Names before sending to OpenAI
+  textContent = normalizeSucursalNames(textContent);
+
+  // 3) Send cleaned text to OpenAI for CSV conversion
   const OPENAI_API_KEY = c.env.OPENAI_API_KEY;
   const openaiUrl = "https://api.openai.com/v1/chat/completions";
 
@@ -61,7 +64,10 @@ Here is the text extracted from a PDF daily sales report.
 Please parse and return only CSV lines with the columns:
 SucursalID,SucursalName,EAN,CantidadVendida,Importe,NumPersonaVtas
 
-Ensure all values are correctly formatted and escape any commas inside fields.
+Ensure:
+- Each value is separated by commas
+- SucursalName is correctly formatted without extra line breaks
+- The output contains no extra text, only pure CSV rows
 
 ${textContent}
       `,
@@ -92,16 +98,13 @@ ${textContent}
   const completion = await response.json();
   const rawCsvOutput = completion?.choices?.[0]?.message?.content || "";
 
-  // 3) Process OpenAI’s response to ensure correct CSV formatting
-  const csvOutput = buildCSV(rawCsvOutput);
-
   // 4) Store the CSV in R2
   const csvKey = crypto.randomUUID() + ".csv";
-  await c.env.BUCKET.put(csvKey, new TextEncoder().encode(csvOutput), {
+  await c.env.BUCKET.put(csvKey, new TextEncoder().encode(rawCsvOutput), {
     httpMetadata: { contentType: "text/csv" },
   });
 
-  // 5) Also store the extracted raw text for reference
+  // 5) Also store the cleaned raw text for reference
   const txtKey = csvKey.replace(".csv", ".txt");
   await c.env.BUCKET.put(txtKey, new TextEncoder().encode(textContent), {
     httpMetadata: { contentType: "text/plain" },
@@ -139,26 +142,17 @@ app.get("/file/:key", async (c) => {
 export default app;
 
 /**
- * CSV Escaping Function
- * Ensures values containing commas, quotes, or newlines are properly formatted.
+ * **Normalize Sucursal Names**
+ * - Removes unwanted **newlines** inside parentheses `()`
+ * - Ensures that multi-line Sucursal Names are joined into a single line
+ * - Example:
+ *   ( ECI
+ *     C.C.SERRANO, 47
+ *     0906 )
+ *   -> ( ECI C.C.SERRANO, 47 0906 )
  */
-function csvEscape(value: string): string {
-  if (typeof value !== "string") value = String(value);
-  const escaped = value.replace(/"/g, '""'); // Escape quotes
-  return `"${escaped}"`; // Wrap in double quotes
-}
-
-/**
- * Ensures OpenAI’s response is correctly formatted as CSV.
- * If OpenAI sends unescaped commas or missing quotes, we fix it here.
- */
-function buildCSV(rawCsvOutput: string): string {
-  const lines = rawCsvOutput
-    .split("\n")
-    .map((line) => {
-      const parts = line.split(",");
-      return parts.map(csvEscape).join(",");
-    });
-
-  return lines.join("\n");
+function normalizeSucursalNames(text: string): string {
+  return text.replace(/\(\s*([\s\S]*?)\s*\)/g, (match, inner) => {
+    return `(${inner.replace(/\s*\n\s*/g, " ")})`;
+  });
 }
