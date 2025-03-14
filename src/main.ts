@@ -180,9 +180,4 @@ Please extract the data and return a valid JSON array formatted exactly as descr
   }
 });
 
-// Function to extract JSON from OpenAI response
-function extractJsonFromResponse(responseText: string): string {
-  return responseText.replace(/```json|```/g, "").trim();
-}
-
 export default app;
