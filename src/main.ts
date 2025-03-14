@@ -3,7 +3,6 @@ import { basicAuth } from "hono/basic-auth";
 import { getDocumentProxy, extractText } from "unpdf";
 import index from "./index.html";
 
-// Add OPENAI_API_KEY to your Worker’s Environment Variables
 type Bindings = {
   BUCKET: R2Bucket;
   USER: string;
@@ -19,50 +18,54 @@ app.use("*", basicAuth({ username: "USER", password: "PASS" }));
 // Serve an HTML form for PDF uploads
 app.get("/", (c) => c.html(index));
 
-// Handle PDF uploads
 app.post("/upload", async (c) => {
-  const formData = await c.req.formData();
-  const file = formData.get("pdf");
+  try {
+    const formData = await c.req.formData();
+    const file = formData.get("pdf");
 
-  // Validate the file
-  if (
-    !file ||
-    typeof file !== "object" ||
-    !(file as any).arrayBuffer ||
-    typeof (file as any).arrayBuffer !== "function"
-  ) {
-    return c.text("Please upload a PDF file.", 400);
-  }
+    if (!file || typeof file !== "object" || !(file as any).arrayBuffer) {
+      return c.text("Error: Please upload a valid PDF file.", 400);
+    }
 
-  // 1) Convert PDF to text using unpdf
-  const buffer = await (file as any).arrayBuffer();
-  const pdf = await getDocumentProxy(new Uint8Array(buffer));
-  const result = await extractText(pdf, { mergePages: true });
+    // 1) Check File Size (Limit ~750KB to prevent exceeding 1MB)
+    const MAX_SIZE = 750 * 1024; // 750KB
+    if ((file as any).size > MAX_SIZE) {
+      return c.text("Error: File too large. Max allowed size is 750KB.", 400);
+    }
 
-  // unify text
-  let textContent = Array.isArray(result.text)
-    ? result.text.join("\n")
-    : result.text;
+    // 2) Stream PDF instead of fully buffering
+    const buffer = await (file as any).arrayBuffer();
+    const pdf = await getDocumentProxy(new Uint8Array(buffer));
+    const result = await extractText(pdf, { mergePages: true });
 
-  // 2) Pre-process text before sending it to OpenAI
-  textContent = preprocessExtractedText(textContent);
+    // unify text
+    let textContent = Array.isArray(result.text)
+      ? result.text.join("\n")
+      : result.text;
 
-  // 3) Replace all commas with dots (for decimal consistency)
-  textContent = replaceCommasWithDots(textContent);
+    // 3) Pre-process text before sending it to OpenAI
+    textContent = preprocessExtractedText(textContent);
+    textContent = replaceCommasWithDots(textContent);
 
-  // 4) Send cleaned text to OpenAI for CSV conversion
-  const OPENAI_API_KEY = c.env.OPENAI_API_KEY;
-  const openaiUrl = "https://api.openai.com/v1/chat/completions";
+    // 4) Store Raw Extracted Text in R2 (for debugging)
+    const rawTxtKey = crypto.randomUUID() + ".txt";
+    await c.env.BUCKET.put(rawTxtKey, new TextEncoder().encode(textContent), {
+      httpMetadata: { contentType: "text/plain" },
+    });
 
-  const messages = [
-    {
-      role: "system",
-      content:
-        "You are a helpful assistant that converts extracted text from a PDF sales report into structured CSV data.",
-    },
-    {
-      role: "user",
-      content: `
+    // 5) Send cleaned text to OpenAI
+    const OPENAI_API_KEY = c.env.OPENAI_API_KEY;
+    const openaiUrl = "https://api.openai.com/v1/chat/completions";
+
+    const messages = [
+      {
+        role: "system",
+        content:
+          "You are a helpful assistant that converts extracted text from a PDF sales report into structured CSV data.",
+      },
+      {
+        role: "user",
+        content: `
 Here is the text extracted from a PDF daily sales report. 
 Please parse and return only CSV lines with the columns:
 SucursalID,SucursalName,EAN,CantidadVendida,Importe,NumPersonaVtas
@@ -74,55 +77,54 @@ Ensure:
 - The output contains no extra text, only pure CSV rows
 
 ${textContent}
-      `,
-    },
-  ];
+        `,
+      },
+    ];
 
-  const chatBody = {
-    model: "gpt-4", // or "gpt-3.5-turbo" if needed
-    messages,
-    temperature: 0,
-    max_tokens: 2000,
-  };
+    const chatBody = {
+      model: "gpt-4",
+      messages,
+      temperature: 0,
+      max_tokens: 2000,
+    };
 
-  const response = await fetch(openaiUrl, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${OPENAI_API_KEY}`,
-    },
-    body: JSON.stringify(chatBody),
-  });
+    const response = await fetch(openaiUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${OPENAI_API_KEY}`,
+      },
+      body: JSON.stringify(chatBody),
+    });
 
-  if (!response.ok) {
-    const err = await response.text();
-    return c.text(`OpenAI API error: ${err}`, 500);
+    if (!response.ok) {
+      const err = await response.text();
+      console.error("OpenAI API Error:", err);
+      return c.text(`Error: OpenAI API failed: ${err}`, 500);
+    }
+
+    const completion = await response.json();
+    const rawCsvOutput = completion?.choices?.[0]?.message?.content || "";
+
+    // 6) Add Headers to the CSV before storing
+    const CSV_HEADERS = "SucursalID,SucursalName,EAN,CantidadVendida,Importe,NumPersonaVtas";
+    const finalCsvOutput = CSV_HEADERS + "\n" + rawCsvOutput.trim();
+
+    // 7) Store the CSV in R2
+    const csvKey = crypto.randomUUID() + ".csv";
+    await c.env.BUCKET.put(csvKey, new TextEncoder().encode(finalCsvOutput), {
+      httpMetadata: { contentType: "text/csv" },
+    });
+
+    return c.html(`
+      <p>CSV generated! <a href="/file/${csvKey}">Download CSV here</a>.</p>
+      <p>Raw extracted text: <a href="/file/${rawTxtKey}">View raw text</a>.</p>
+    `);
+
+  } catch (error) {
+    console.error("Server Error:", error);
+    return c.text(`Error processing file: ${error.message}`, 500);
   }
-
-  const completion = await response.json();
-  const rawCsvOutput = completion?.choices?.[0]?.message?.content || "";
-
-  // 5) Add Headers to the CSV before storing
-  const CSV_HEADERS = "SucursalID,SucursalName,EAN,CantidadVendida,Importe,NumPersonaVtas";
-  const finalCsvOutput = CSV_HEADERS + "\n" + rawCsvOutput.trim(); // Ensure headers are always present
-
-  // 6) Store the CSV in R2
-  const csvKey = crypto.randomUUID() + ".csv";
-  await c.env.BUCKET.put(csvKey, new TextEncoder().encode(finalCsvOutput), {
-    httpMetadata: { contentType: "text/csv" },
-  });
-
-  // 7) Also store the cleaned raw text for reference
-  const txtKey = csvKey.replace(".csv", ".txt");
-  await c.env.BUCKET.put(txtKey, new TextEncoder().encode(textContent), {
-    httpMetadata: { contentType: "text/plain" },
-  });
-
-  // 8) Return an HTML response with links to download both the CSV and raw text
-  return c.html(`
-    <p>CSV generated! <a href="/file/${csvKey}">Download CSV here</a>.</p>
-    <p>Raw extracted text: <a href="/file/${txtKey}">View raw text</a>.</p>
-  `);
 });
 
 // Route to retrieve stored files
@@ -139,7 +141,6 @@ app.get("/file/:key", async (c) => {
     contentType = "text/csv";
   }
 
-  // Return the file
   const data = await object.arrayBuffer();
   return c.body(data, 200, {
     "Content-Type": contentType,
@@ -151,31 +152,25 @@ export default app;
 
 /**
  * **Pre-process extracted text to fix nested parentheses and clean formatting**
- * - Removes unnecessary blank lines.
- * - Fixes multi-line Sucursal Names inside **nested parentheses**.
- * - Keeps only relevant sales data.
  */
 function preprocessExtractedText(text: string): string {
-  // (1) Remove excessive whitespace & normalize spaces
   let cleanedText = text.replace(/\s+/g, " ").trim();
 
-  // (2) Handle nested parentheses correctly
+  // Handle nested parentheses correctly
   cleanedText = cleanedText.replace(/\(([^()]*\([^()]*\)[^()]*)\)/g, (match, inner) => {
     return `(${inner.replace(/\s*\n\s*/g, " ")})`;
   });
 
-  // (3) Keep only relevant sales data
   const lines = cleanedText.split("\n");
   const relevantLines = lines.filter(line =>
     line.match(/Sucursal|EAN|CantidadVendida|Importe|Num\. Persona Vtas/i)
   );
 
-  return relevantLines.join("\n"); // Return cleaned, relevant text
+  return relevantLines.join("\n");
 }
 
 /**
  * **Replace commas with dots before sending text to OpenAI**
- * - Fixes decimal number formats by converting `,` to `.`
  */
 function replaceCommasWithDots(text: string): string {
   return text.replace(/,/g, ".");
