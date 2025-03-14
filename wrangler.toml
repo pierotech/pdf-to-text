@@ -1,4 +1,4 @@
-name = "pdf-to-text"
+name = "pdf-to-text-gemini"
 compatibility_date = "2024-11-11"
 
 [[r2_buckets]]
