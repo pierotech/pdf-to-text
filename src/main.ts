@@ -19,21 +19,21 @@ app.use("*", basicAuth({ username: "USER", password: "PASS" }));
 app.get("/", (c) => c.html(index));
 
 app.post("/upload", async (c) => {
-  const formData = await c.req.formData();
-  const file = formData.get("pdf");
-
-  if (!file || typeof file !== "object" || !(file as any).arrayBuffer) {
-    return c.text("Please upload a valid PDF file.", 400);
-  }
-
-  // 1) Check File Size (Limit ~750KB to prevent exceeding 1MB)
-  const MAX_SIZE = 750 * 1024; // 750KB
-  if ((file as any).size > MAX_SIZE) {
-    return c.text("File too large. Please upload a file smaller than 750KB.", 400);
-  }
-
   try {
-    // 2) Stream the file instead of fully buffering
+    const formData = await c.req.formData();
+    const file = formData.get("pdf");
+
+    if (!file || typeof file !== "object" || !(file as any).arrayBuffer) {
+      return c.text("Error: Please upload a valid PDF file.", 400);
+    }
+
+    // 1) Check File Size (Limit ~750KB to prevent exceeding 1MB)
+    const MAX_SIZE = 750 * 1024; // 750KB
+    if ((file as any).size > MAX_SIZE) {
+      return c.text("Error: File too large. Max allowed size is 750KB.", 400);
+    }
+
+    // 2) Stream PDF instead of fully buffering
     const buffer = await (file as any).arrayBuffer();
     const pdf = await getDocumentProxy(new Uint8Array(buffer));
     const result = await extractText(pdf, { mergePages: true });
@@ -47,7 +47,13 @@ app.post("/upload", async (c) => {
     textContent = preprocessExtractedText(textContent);
     textContent = replaceCommasWithDots(textContent);
 
-    // 4) Send cleaned text to OpenAI for CSV conversion
+    // 4) Store Raw Extracted Text in R2 (for debugging)
+    const rawTxtKey = crypto.randomUUID() + ".txt";
+    await c.env.BUCKET.put(rawTxtKey, new TextEncoder().encode(textContent), {
+      httpMetadata: { contentType: "text/plain" },
+    });
+
+    // 5) Send cleaned text to OpenAI
     const OPENAI_API_KEY = c.env.OPENAI_API_KEY;
     const openaiUrl = "https://api.openai.com/v1/chat/completions";
 
@@ -76,7 +82,7 @@ ${textContent}
     ];
 
     const chatBody = {
-      model: "gpt-4", // or "gpt-3.5-turbo" if needed
+      model: "gpt-4",
       messages,
       temperature: 0,
       max_tokens: 2000,
@@ -93,33 +99,30 @@ ${textContent}
 
     if (!response.ok) {
       const err = await response.text();
-      return c.text(`OpenAI API error: ${err}`, 500);
+      console.error("OpenAI API Error:", err);
+      return c.text(`Error: OpenAI API failed: ${err}`, 500);
     }
 
     const completion = await response.json();
     const rawCsvOutput = completion?.choices?.[0]?.message?.content || "";
 
-    // 5) Add Headers to the CSV before storing
+    // 6) Add Headers to the CSV before storing
     const CSV_HEADERS = "SucursalID,SucursalName,EAN,CantidadVendida,Importe,NumPersonaVtas";
-    const finalCsvOutput = CSV_HEADERS + "\n" + rawCsvOutput.trim(); // Ensure headers are always present
+    const finalCsvOutput = CSV_HEADERS + "\n" + rawCsvOutput.trim();
 
-    // 6) Store the CSV in R2
+    // 7) Store the CSV in R2
     const csvKey = crypto.randomUUID() + ".csv";
     await c.env.BUCKET.put(csvKey, new TextEncoder().encode(finalCsvOutput), {
       httpMetadata: { contentType: "text/csv" },
     });
 
-    // 7) Also store the cleaned raw text for reference
-    const txtKey = csvKey.replace(".csv", ".txt");
-    await c.env.BUCKET.put(txtKey, new TextEncoder().encode(textContent), {
-      httpMetadata: { contentType: "text/plain" },
-    });
-
     return c.html(`
       <p>CSV generated! <a href="/file/${csvKey}">Download CSV here</a>.</p>
-      <p>Raw extracted text: <a href="/file/${txtKey}">View raw text</a>.</p>
+      <p>Raw extracted text: <a href="/file/${rawTxtKey}">View raw text</a>.</p>
     `);
+
   } catch (error) {
+    console.error("Server Error:", error);
     return c.text(`Error processing file: ${error.message}`, 500);
   }
 });
@@ -152,6 +155,8 @@ export default app;
  */
 function preprocessExtractedText(text: string): string {
   let cleanedText = text.replace(/\s+/g, " ").trim();
+
+  // Handle nested parentheses correctly
   cleanedText = cleanedText.replace(/\(([^()]*\([^()]*\)[^()]*)\)/g, (match, inner) => {
     return `(${inner.replace(/\s*\n\s*/g, " ")})`;
   });
