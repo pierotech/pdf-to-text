@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <script src="https://unpkg.com/htmx.org@1.9.12"></script>
-    <title>Pdf To Text</title>
+    <title>Olistic Daily Sales Report EDI PDF to CSV</title>
     <style>
       /* Spinner Styles */
       #loading-spinner {
@@ -30,7 +30,7 @@
     </style>
   </head>
   <body>
-    <h1>Upload your PDF</h1>
+    <h1>Sube el PDF descargdo de EDI</h1>
     <form
       hx-post="/upload"
       hx-target="#result"
@@ -40,21 +40,20 @@
       hx-on:afterRequest="document.getElementById('loading-spinner').style.display = 'none'"
     >
       <fieldset>
-        <legend>PDF Upload Form</legend>
         <div>
-          <label for="pdf">PDF File</label>
+          <label for="pdf">Archivo PDF</label>
           <input type="file" name="pdf" required />
         </div>
 
         <div>
-          <button type="submit">Upload</button>
+          <button type="submit">Procesar</button>
         </div>
       </fieldset>
     </form>
 
     <!-- Loading Spinner -->
     <div id="loading-spinner">
-      <p>Processing... Please wait.</p>
+      <p>Procesando, por favor espera...</p>
       <div class="spinner"></div>
     </div>
 
