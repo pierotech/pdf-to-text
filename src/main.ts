@@ -49,7 +49,7 @@ app.post("/upload", async (c) => {
       httpMetadata: { contentType: "text/plain" },
     });
 
-    // 4) Send cleaned text to OpenAI
+    // 4) Send cleaned text to OpenAI with stricter prompt
     const OPENAI_API_KEY = c.env.OPENAI_API_KEY;
     const openaiUrl = "https://api.openai.com/v1/chat/completions";
 
@@ -57,11 +57,24 @@ app.post("/upload", async (c) => {
       {
         role: "system",
         content:
-          "You are a helpful assistant that converts extracted text from a PDF sales report into structured CSV data.",
+          "You are a data extraction assistant. You must strictly format the output as CSV with exactly these columns: SucursalID, SucursalName, EAN, CantidadVendida, Importe, NumPersonaVtas.",
       },
       {
         role: "user",
-        content: `Extracted text:\n\n${textContent}`,
+        content: `
+Extracted text from a PDF sales report:
+
+${textContent}
+
+Please generate a CSV file with only these columns:
+SucursalID, SucursalName, EAN, CantidadVendida, Importe, NumPersonaVtas
+
+Rules:
+- Do not add extra columns.
+- Ensure all values are correctly aligned under their respective headers.
+- The output should be formatted exactly as a CSV.
+- Do not include explanations, only output the CSV content.
+        `,
       },
     ];
 
@@ -69,7 +82,7 @@ app.post("/upload", async (c) => {
       model: "gpt-4",
       messages,
       temperature: 0,
-      max_tokens: 1000, // 🔥 REDUCED FROM 2000 TO 1000
+      max_tokens: 1000,
     };
 
     const response = await fetch(openaiUrl, {
@@ -88,19 +101,22 @@ app.post("/upload", async (c) => {
     }
 
     const completion = await response.json();
-    const rawCsvOutput = completion?.choices?.[0]?.message?.content || "";
+    let rawCsvOutput = completion?.choices?.[0]?.message?.content || "";
 
-    // 5) Add Headers to the CSV before storing
+    // 5) Clean CSV Output to Remove Extra Columns
+    rawCsvOutput = cleanCsvOutput(rawCsvOutput);
+
+    // 6) Add Headers to the CSV before storing
     const CSV_HEADERS = "SucursalID,SucursalName,EAN,CantidadVendida,Importe,NumPersonaVtas";
     const finalCsvOutput = CSV_HEADERS + "\n" + rawCsvOutput.trim();
 
-    // 6) Store the CSV in R2
+    // 7) Store the CSV in R2
     const csvKey = crypto.randomUUID() + ".csv";
     await c.env.BUCKET.put(csvKey, new TextEncoder().encode(finalCsvOutput), {
       httpMetadata: { contentType: "text/csv" },
     });
 
-    // 7) Return download links for CSV and extracted text
+    // 8) Return download links for CSV and extracted text
     return c.html(`
       <p>CSV generated! <a href="/file/${csvKey}">Download CSV here</a>.</p>
       <p>Raw extracted text: <a href="/file/${rawTxtKey}">View raw text</a>.</p>
@@ -111,6 +127,26 @@ app.post("/upload", async (c) => {
     return c.text(`Error processing file: ${error.message}`, 500);
   }
 });
+
+// Function to clean CSV output and ensure only correct columns are kept
+function cleanCsvOutput(csvData: string): string {
+  const expectedHeaders = [
+    "SucursalID",
+    "SucursalName",
+    "EAN",
+    "CantidadVendida",
+    "Importe",
+    "NumPersonaVtas",
+  ];
+
+  const rows = csvData.trim().split("\n");
+  const cleanRows = rows.filter((row, index) => {
+    const values = row.split(",");
+    return index === 0 || values.length === expectedHeaders.length; // Keep only valid rows
+  });
+
+  return cleanRows.join("\n");
+}
 
 // Route to retrieve stored files
 app.get("/file/:key", async (c) => {
