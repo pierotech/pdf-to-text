@@ -114,14 +114,14 @@ function parseSalesReport(rawText: string) {
   const allLines = rawText.split(/\r?\n/);
   const lines = allLines.map((l) => l.trim());
   let i = 0;
-  const rows: Array<{
-    SucursalID: string;
-    SucursalName: string;
-    EAN: string;
-    CantidadVendida: string;
-    Importe: string;
-    NumPersonaVtas: string;
-  }> =;
+const rows: Array<{
+  SucursalID: string;
+  SucursalName: string;
+  EAN: string;
+  CantidadVendida: string;
+  Importe: string;
+  NumPersonaVtas: string;
+}> = [];
 
   function readNextNonEmptyLine(): string | null {
     while (i < lines.length) {
