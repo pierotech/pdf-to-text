@@ -94,7 +94,7 @@ Please extract the data and return a valid JSON array formatted exactly as descr
         messages,
         temperature: 0,
         max_tokens: 1500, // 🔥 Allow for a larger structured JSON output
-        response_format: "json",
+        response_format: { "type": "json" }
       };
 
       const response = await fetch(openaiUrl, {
