@@ -152,7 +152,7 @@ function preprocessExtractedText(text: string): string {
   let cleanedText = text.replace(/\s+/g, " ").trim();
 
   // (2) Normalize multi-line Sucursal Names (joins lines inside parentheses)
-  cleanedText = cleanedText.replace(/\(\s*([\s\S]*?)\s*\)/g, (match, inner) => {
+  cleanedText.replace(/\(\s*([^\n)]*?)\s*\)/g, (match, inner) => {
     return `(${inner.replace(/\s*\n\s*/g, " ")})`;
   });
 
