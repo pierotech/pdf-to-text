@@ -83,7 +83,7 @@ app.get("/file/:key", async (c) => {
 
   return c.body(data, 200, {
     "Content-Type": "text/csv",
-    "Content-Disposition": attachment; filename="${key}",
+    "Content-Disposition": `attachment; filename="${key}"`, // Corrected line
     "Cache-Control": "public, max-age=86400",
   });
 });
