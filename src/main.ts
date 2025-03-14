@@ -15,6 +15,38 @@ const app = new Hono<{ Bindings: Bindings }>();
 // Apply basic authentication to all routes
 app.use("*", basicAuth({ username: "USER", password: "PASS" }));
 
+// Function to split text into chunks based on "Sucursal"
+function splitTextBySucursal(text: string, maxTokens: number): string[] {
+  const lines = text.split("\n");
+  let chunks: string[] = [];
+  let currentChunk: string[] = [];
+  let currentSize = 0;
+
+  for (const line of lines) {
+    if (line.toLowerCase().startsWith("sucursal") && currentSize > 0) {
+      if (currentSize >= maxTokens) {
+        chunks.push(currentChunk.join("\n"));
+        currentChunk = [];
+        currentSize = 0;
+      }
+    }
+
+    currentChunk.push(line);
+    currentSize += line.split(" ").length;
+  }
+
+  if (currentChunk.length > 0) {
+    chunks.push(currentChunk.join("\n"));
+  }
+
+  return chunks;
+}
+
+// Function to extract JSON from OpenAI response
+function extractJsonFromResponse(responseText: string): string {
+  return responseText.replace(/```json|```/g, "").trim();
+}
+
 // Serve an HTML form for PDF uploads
 app.get("/", (c) => c.html(index));
 
