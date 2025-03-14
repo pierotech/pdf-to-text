@@ -94,10 +94,10 @@ Please extract the data and return a valid JSON array formatted exactly as descr
       ];
 
       const chatBody = {
-        model: "gpt-4-turbo", // ✅ Use Turbo for better JSON accuracy
+        model: "gpt-4-turbo",
         messages,
         temperature: 0,
-        max_tokens: 1500, // 🔥 Allow for a larger structured JSON output
+        max_tokens: 1500,
       };
 
       const response = await fetch(openaiUrl, {
@@ -123,15 +123,22 @@ Please extract the data and return a valid JSON array formatted exactly as descr
     // 5) Convert JSON to CSV
     const finalCsvOutput = convertJsonToCsv(allJsonData);
 
-    // 6) Store the CSV in R2
+    // 6) Store JSON response in R2
+    const jsonKey = crypto.randomUUID() + ".json";
+    await c.env.BUCKET.put(jsonKey, new TextEncoder().encode(JSON.stringify(allJsonData, null, 2)), {
+      httpMetadata: { contentType: "application/json" },
+    });
+
+    // 7) Store the CSV in R2
     const csvKey = crypto.randomUUID() + ".csv";
     await c.env.BUCKET.put(csvKey, new TextEncoder().encode(finalCsvOutput), {
       httpMetadata: { contentType: "text/csv" },
     });
 
-    // 7) Return download links for CSV and extracted text
+    // 8) Return download links for JSON, CSV, and raw extracted text
     return c.html(`
       <p>CSV generated! <a href="/file/${csvKey}">Download CSV here</a>.</p>
+      <p>JSON extracted! <a href="/file/${jsonKey}">Download JSON here</a>.</p>
       <p>Raw extracted text: <a href="/file/${rawTxtKey}">View raw text</a>.</p>
     `);
 
@@ -143,53 +150,7 @@ Please extract the data and return a valid JSON array formatted exactly as descr
 
 // Function to extract JSON from OpenAI response
 function extractJsonFromResponse(responseText: string): string {
-  const match = responseText.match(/```json\n([\s\S]+?)\n```/);
-  return match ? match[1] : responseText;
-}
-
-// Function to split text into chunks based on "Sucursal"
-function splitTextBySucursal(text: string, maxTokens: number): string[] {
-  const lines = text.split("\n");
-  let chunks: string[] = [];
-  let currentChunk: string[] = [];
-  let currentSize = 0;
-
-  for (const line of lines) {
-    if (line.toLowerCase().startsWith("sucursal") && currentSize > 0) {
-      if (currentSize >= maxTokens) {
-        chunks.push(currentChunk.join("\n"));
-        currentChunk = [];
-        currentSize = 0;
-      }
-    }
-
-    currentChunk.push(line);
-    currentSize += line.split(" ").length;
-  }
-
-  if (currentChunk.length > 0) {
-    chunks.push(currentChunk.join("\n"));
-  }
-
-  return chunks;
-}
-
-// Function to convert JSON to CSV
-function convertJsonToCsv(jsonData: any[]): string {
-  const CSV_HEADERS = "SucursalID,SucursalName,EAN,CantidadVendida,Importe,NumPersonaVtas";
-
-  const csvRows = jsonData.map((record) => {
-    return [
-      `"${record.SucursalID}"`,
-      `"${record.SucursalName}"`,
-      `"${record.EAN}"`,
-      record.CantidadVendida,
-      record.Importe.toFixed(2),
-      `"${record.NumPersonaVtas}"`,
-    ].join(",");
-  });
-
-  return CSV_HEADERS + "\n" + csvRows.join("\n");
+  return responseText.replace(/```json|```/g, "").trim();
 }
 
 export default app;
