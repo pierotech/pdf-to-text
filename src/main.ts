@@ -45,17 +45,32 @@ function splitTextBySucursal(text: string, maxTokens: number): string[] {
 // Function to extract JSON from OpenAI response safely
 function extractJsonFromResponse(responseText: string): string {
   try {
-    // Extract JSON from triple backticks (` ```json ... ``` `)
     const match = responseText.match(/```json([\s\S]+?)```/);
     const jsonString = match ? match[1].trim() : responseText.trim();
-
-    // Validate JSON structure before parsing
     JSON.parse(jsonString);
     return jsonString;
   } catch (error) {
     console.error("❌ OpenAI returned invalid JSON:", responseText);
     throw new Error("Invalid JSON response from OpenAI.");
   }
+}
+
+// Function to convert JSON to CSV
+function convertJsonToCsv(jsonData: any[]): string {
+  const CSV_HEADERS = "SucursalID,SucursalName,EAN,CantidadVendida,Importe,NumPersonaVtas";
+
+  const csvRows = jsonData.map((record) => {
+    return [
+      `"${record.SucursalID}"`,
+      `"${record.SucursalName}"`,
+      `"${record.EAN}"`,
+      record.CantidadVendida,
+      record.Importe.toFixed(2),
+      `"${record.NumPersonaVtas}"`,
+    ].join(",");
+  });
+
+  return CSV_HEADERS + "\n" + csvRows.join("\n");
 }
 
 // Serve an HTML form for PDF uploads
@@ -158,15 +173,25 @@ app.post("/upload", async (c) => {
       allJsonData.push(...JSON.parse(cleanJson));
     }
 
-    // 5) Store JSON response in R2
+    // 5) Convert JSON to CSV
+    const finalCsvOutput = convertJsonToCsv(allJsonData);
+
+    // 6) Store JSON and CSV response in R2
     const jsonKey = crypto.randomUUID() + ".json";
     await c.env.BUCKET.put(jsonKey, new TextEncoder().encode(JSON.stringify(allJsonData, null, 2)), {
       httpMetadata: { contentType: "application/json" },
     });
 
+    const csvKey = crypto.randomUUID() + ".csv";
+    await c.env.BUCKET.put(csvKey, new TextEncoder().encode(finalCsvOutput), {
+      httpMetadata: { contentType: "text/csv" },
+    });
+
+    // 7) Return download links for JSON, CSV, and raw extracted text
     return c.html(`
-      <p>JSON extracted! <a href="/file/${jsonKey}">Download JSON here</a>.</p>
-      <p>Raw extracted text: <a href="/file/${rawTxtKey}">View raw text</a>.</p>
+      <p>✅ <strong>CSV generated:</strong> <a href="/file/${csvKey}">Download CSV</a></p>
+      <p>✅ <strong>JSON extracted:</strong> <a href="/file/${jsonKey}">Download JSON</a></p>
+      <p>✅ <strong>Raw extracted text:</strong> <a href="/file/${rawTxtKey}">Download TXT</a></p>
     `);
 
   } catch (error) {
