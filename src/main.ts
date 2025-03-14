@@ -44,7 +44,7 @@ app.post("/upload", async (c) => {
     ? result.text.join("\n")
     : result.text;
 
-  // 2) Pre-process the text to optimize token usage & improve OpenAI parsing
+  // 2) Pre-process text before sending it to OpenAI
   textContent = preprocessExtractedText(textContent);
 
   // 3) Send cleaned text to OpenAI for CSV conversion
@@ -142,22 +142,21 @@ app.get("/file/:key", async (c) => {
 export default app;
 
 /**
- * **Pre-process extracted text to reduce token usage**
+ * **Pre-process extracted text to fix nested parentheses and clean formatting**
  * - Removes unnecessary blank lines.
- * - Merges broken Sucursal Names into a single line.
+ * - Fixes multi-line Sucursal Names inside **nested parentheses**.
  * - Keeps only relevant sales data.
  */
 function preprocessExtractedText(text: string): string {
   // (1) Remove excessive whitespace & normalize spaces
   let cleanedText = text.replace(/\s+/g, " ").trim();
 
-  // (2) Normalize multi-line Sucursal Names (joins lines inside parentheses)
-  cleanedText.replace(/\(\s*([^\n)]*?)\s*\)/g, (match, inner) => {
+  // (2) Handle nested parentheses correctly
+  cleanedText = cleanedText.replace(/\(([^()]*\([^()]*\)[^()]*)\)/g, (match, inner) => {
     return `(${inner.replace(/\s*\n\s*/g, " ")})`;
   });
 
   // (3) Keep only relevant sales data
-  // Assuming sales data always contains "Sucursal", "EAN", "CantidadVendida", or "Importe"
   const lines = cleanedText.split("\n");
   const relevantLines = lines.filter(line =>
     line.match(/Sucursal|EAN|CantidadVendida|Importe|Num\. Persona Vtas/i)
