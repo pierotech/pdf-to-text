@@ -102,19 +102,23 @@ ${textContent}
   const completion = await response.json();
   const rawCsvOutput = completion?.choices?.[0]?.message?.content || "";
 
-  // 5) Store the CSV in R2
+  // 5) Add Headers to the CSV before storing
+  const CSV_HEADERS = "SucursalID,SucursalName,EAN,CantidadVendida,Importe,NumPersonaVtas";
+  const finalCsvOutput = CSV_HEADERS + "\n" + rawCsvOutput.trim(); // Ensure headers are always present
+
+  // 6) Store the CSV in R2
   const csvKey = crypto.randomUUID() + ".csv";
-  await c.env.BUCKET.put(csvKey, new TextEncoder().encode(rawCsvOutput), {
+  await c.env.BUCKET.put(csvKey, new TextEncoder().encode(finalCsvOutput), {
     httpMetadata: { contentType: "text/csv" },
   });
 
-  // 6) Also store the cleaned raw text for reference
+  // 7) Also store the cleaned raw text for reference
   const txtKey = csvKey.replace(".csv", ".txt");
   await c.env.BUCKET.put(txtKey, new TextEncoder().encode(textContent), {
     httpMetadata: { contentType: "text/plain" },
   });
 
-  // 7) Return an HTML response with links to download both the CSV and raw text
+  // 8) Return an HTML response with links to download both the CSV and raw text
   return c.html(`
     <p>CSV generated! <a href="/file/${csvKey}">Download CSV here</a>.</p>
     <p>Raw extracted text: <a href="/file/${txtKey}">View raw text</a>.</p>
