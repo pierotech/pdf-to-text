@@ -15,36 +15,20 @@ const app = new Hono<{ Bindings: Bindings }>();
 // Apply basic authentication to all routes
 app.use("*", basicAuth({ username: "USER", password: "PASS" }));
 
-// Function to split text into chunks based on "Sucursal"
-function splitTextBySucursal(text: string, maxTokens: number): string[] {
-  const lines = text.split("\n");
-  let chunks: string[] = [];
-  let currentChunk: string[] = [];
-  let currentSize = 0;
-
-  for (const line of lines) {
-    if (line.toLowerCase().startsWith("sucursal") && currentSize > 0) {
-      if (currentSize >= maxTokens) {
-        chunks.push(currentChunk.join("\n"));
-        currentChunk = [];
-        currentSize = 0;
-      }
-    }
-
-    currentChunk.push(line);
-    currentSize += line.split(" ").length;
-  }
-
-  if (currentChunk.length > 0) {
-    chunks.push(currentChunk.join("\n"));
-  }
-
-  return chunks;
-}
-
-// Function to extract JSON from OpenAI response
+// Function to extract JSON from OpenAI response safely
 function extractJsonFromResponse(responseText: string): string {
-  return responseText.replace(/```json|```/g, "").trim();
+  try {
+    // Extract JSON from triple backticks (` ```json ... ``` `)
+    const match = responseText.match(/```json([\s\S]+?)```/);
+    const jsonString = match ? match[1].trim() : responseText.trim();
+
+    // Validate JSON structure before parsing
+    JSON.parse(jsonString);
+    return jsonString;
+  } catch (error) {
+    console.error("❌ OpenAI returned invalid JSON:", responseText);
+    throw new Error("Invalid JSON response from OpenAI.");
+  }
 }
 
 // Serve an HTML form for PDF uploads
@@ -81,98 +65,61 @@ app.post("/upload", async (c) => {
       httpMetadata: { contentType: "text/plain" },
     });
 
-    // 4) Smart split based on "Sucursal"
-    const CHUNK_SIZE = 4000;
-    const textChunks = splitTextBySucursal(textContent, CHUNK_SIZE);
-
+    // 4) Send to OpenAI for JSON extraction
     const OPENAI_API_KEY = c.env.OPENAI_API_KEY;
     const openaiUrl = "https://api.openai.com/v1/chat/completions";
 
-    let allJsonData: any[] = [];
+    const messages = [
+      {
+        role: "system",
+        content:
+          "You are a data extraction assistant. You must strictly format the output as a valid JSON array:\n\n" +
+          "```json\n" +
+          "[ { \"SucursalID\": \"string\", \"SucursalName\": \"string\", \"EAN\": \"string\", \"CantidadVendida\": \"integer\", \"Importe\": \"float\", \"NumPersonaVtas\": \"string\" } ]\n" +
+          "```\n\n" +
+          "Ensure that:\n" +
+          "- Floating-point numbers always have a decimal (e.g., `49.90`, not `49`).\n" +
+          "- The response must be valid JSON with no extra text.",
+      },
+      {
+        role: "user",
+        content: `Extracted text from PDF:\n\n${textContent}\n\nPlease extract and return a valid JSON array.`,
+      },
+    ];
 
-    for (const chunk of textChunks) {
-      const messages = [
-        {
-          role: "system",
-          content:
-            "You are a data extraction assistant. You must strictly format the output as a JSON array with the following structure:\n\n" +
-            "```json\n" +
-            "[\n" +
-            "  {\n" +
-            '    "SucursalID": "string",\n' +
-            '    "SucursalName": "string",\n' +
-            '    "EAN": "string",\n' +
-            '    "CantidadVendida": "integer",\n' +
-            '    "Importe": "float",\n' +
-            '    "NumPersonaVtas": "string"\n' +
-            "  }\n" +
-            "]\n" +
-            "```\n\n" +
-            "Ensure that:\n" +
-            "- Each item in the array represents a sales record.\n" +
-            "- All fields are correctly extracted.\n" +
-            "- Do not include explanations or additional text, only return valid JSON inside triple backticks.",
-        },
-        {
-          role: "user",
-          content: `
-Extracted text from a PDF sales report:
+    const chatBody = {
+      model: "gpt-4-turbo",
+      messages,
+      temperature: 0,
+      max_tokens: 2000, // ✅ Allow full response
+    };
 
-${chunk}
+    const response = await fetch(openaiUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${OPENAI_API_KEY}`,
+      },
+      body: JSON.stringify(chatBody),
+    });
 
-Please extract the data and return a valid JSON array formatted exactly as described in the system instructions.
-          `,
-        },
-      ];
-
-      const chatBody = {
-        model: "gpt-4-turbo",
-        messages,
-        temperature: 0,
-        max_tokens: 1500,
-      };
-
-      const response = await fetch(openaiUrl, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${OPENAI_API_KEY}`,
-        },
-        body: JSON.stringify(chatBody),
-      });
-
-      if (!response.ok) {
-        const err = await response.text();
-        console.error("OpenAI API Error:", err);
-        return c.text(`Error: OpenAI API failed: ${err}`, 500);
-      }
-
-      const completion = await response.json();
-      const jsonData = extractJsonFromResponse(completion?.choices?.[0]?.message?.content);
-      allJsonData.push(...JSON.parse(jsonData));
+    if (!response.ok) {
+      const err = await response.text();
+      console.error("OpenAI API Error:", err);
+      return c.text(`Error: OpenAI API failed: ${err}`, 500);
     }
 
-    // 5) Convert JSON to CSV
-    const finalCsvOutput = convertJsonToCsv(allJsonData);
+    const completion = await response.json();
+    const rawJson = completion?.choices?.[0]?.message?.content;
+    const cleanJson = extractJsonFromResponse(rawJson);
 
-    // 6) Store JSON response in R2
+    // Store raw OpenAI response
     const jsonKey = crypto.randomUUID() + ".json";
-    await c.env.BUCKET.put(jsonKey, new TextEncoder().encode(JSON.stringify(allJsonData, null, 2)), {
+    await c.env.BUCKET.put(jsonKey, new TextEncoder().encode(cleanJson), {
       httpMetadata: { contentType: "application/json" },
     });
 
-    // 7) Store the CSV in R2
-    const csvKey = crypto.randomUUID() + ".csv";
-    await c.env.BUCKET.put(csvKey, new TextEncoder().encode(finalCsvOutput), {
-      httpMetadata: { contentType: "text/csv" },
-    });
-
-    // 8) Return download links for JSON, CSV, and raw extracted text
-    return c.html(`
-      <p>CSV generated! <a href="/file/${csvKey}">Download CSV here</a>.</p>
-      <p>JSON extracted! <a href="/file/${jsonKey}">Download JSON here</a>.</p>
-      <p>Raw extracted text: <a href="/file/${rawTxtKey}">View raw text</a>.</p>
-    `);
+    return c.html(`<p>JSON extracted! <a href="/file/${jsonKey}">Download JSON here</a>.</p>`);
 
   } catch (error) {
     console.error("Server Error:", error);
