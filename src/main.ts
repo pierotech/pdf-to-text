@@ -47,7 +47,10 @@ app.post("/upload", async (c) => {
   // 2) Pre-process text before sending it to OpenAI
   textContent = preprocessExtractedText(textContent);
 
-  // 3) Send cleaned text to OpenAI for CSV conversion
+  // 3) Replace all commas with dots (for decimal consistency)
+  textContent = replaceCommasWithDots(textContent);
+
+  // 4) Send cleaned text to OpenAI for CSV conversion
   const OPENAI_API_KEY = c.env.OPENAI_API_KEY;
   const openaiUrl = "https://api.openai.com/v1/chat/completions";
 
@@ -67,6 +70,7 @@ SucursalID,SucursalName,EAN,CantidadVendida,Importe,NumPersonaVtas
 Ensure:
 - Each value is separated by commas
 - SucursalName is correctly formatted without extra line breaks
+- Replace decimal separators correctly (use dots instead of commas)
 - The output contains no extra text, only pure CSV rows
 
 ${textContent}
@@ -98,19 +102,19 @@ ${textContent}
   const completion = await response.json();
   const rawCsvOutput = completion?.choices?.[0]?.message?.content || "";
 
-  // 4) Store the CSV in R2
+  // 5) Store the CSV in R2
   const csvKey = crypto.randomUUID() + ".csv";
   await c.env.BUCKET.put(csvKey, new TextEncoder().encode(rawCsvOutput), {
     httpMetadata: { contentType: "text/csv" },
   });
 
-  // 5) Also store the cleaned raw text for reference
+  // 6) Also store the cleaned raw text for reference
   const txtKey = csvKey.replace(".csv", ".txt");
   await c.env.BUCKET.put(txtKey, new TextEncoder().encode(textContent), {
     httpMetadata: { contentType: "text/plain" },
   });
 
-  // 6) Return an HTML response with links to download both the CSV and raw text
+  // 7) Return an HTML response with links to download both the CSV and raw text
   return c.html(`
     <p>CSV generated! <a href="/file/${csvKey}">Download CSV here</a>.</p>
     <p>Raw extracted text: <a href="/file/${txtKey}">View raw text</a>.</p>
@@ -163,4 +167,12 @@ function preprocessExtractedText(text: string): string {
   );
 
   return relevantLines.join("\n"); // Return cleaned, relevant text
+}
+
+/**
+ * **Replace commas with dots before sending text to OpenAI**
+ * - Fixes decimal number formats by converting `,` to `.`
+ */
+function replaceCommasWithDots(text: string): string {
+  return text.replace(/,/g, ".");
 }
