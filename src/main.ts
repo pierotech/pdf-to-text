@@ -66,9 +66,9 @@ app.post("/upload", async (c) => {
   });
 
   // 6) Return a link to download the CSV
-  const filePath = /file/${key};
+  const filePath = `/file/${key}`; // Corrected line
   return c.html(
-    <p>CSV generated! <a href="${filePath}">Download here</a>.</p>
+    `<p>CSV generated! <a href="${filePath}">Download here</a>.</p>`
   );
 });
 
