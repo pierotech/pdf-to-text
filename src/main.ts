@@ -37,7 +37,7 @@ function extractJsonFromResponse(responseText: string): string {
 
 // Convert final JSON to CSV
 function convertJsonToCsv(jsonData: any[]): string {
-  const CSV_HEADERS = "SucursalID,SucursalName,EAN,CantidadVendida,Importe";
+  const CSV_HEADERS = "SucursalName,EAN,CantidadVendida,Importe";
 
   const csvRows = jsonData.map((record) => {
     // Safely convert numeric fields
@@ -45,7 +45,6 @@ function convertJsonToCsv(jsonData: any[]): string {
     const importeVal = parseFloat(record.Importe) || 0; // fallback to 0 if parse fails
 
     return [
-      `"${record.SucursalID}"`,
       `"${record.SucursalName}"`,
       `"${record.EAN}"`,
       cantidad,
@@ -185,7 +184,6 @@ app.post("/upload", async (c) => {
             "```json\n" +
             "[\n" +
             "  {\n" +
-            '    "SucursalID": "string",\n' +
             '    "SucursalName": "string",\n' +
             '    "EAN": "string",\n' +
             '    "CantidadVendida": "integer",\n' +
@@ -230,7 +228,6 @@ app.post("/upload", async (c) => {
       const completion = await response.json();
       const rawJson = completion?.choices?.[0]?.message?.content ?? "";
       const cleanJson = extractJsonFromResponse(rawJson);
-      console.log(cleanJson);
       
       // Merge partial JSON into allJsonData
       allJsonData.push(...JSON.parse(cleanJson));
