@@ -30,11 +30,13 @@
     </style>
   </head>
   <body>
-    <h1>Sube el PDF descargdo de EDI</h1>
+    <h1>Olistic Daily Sales Report EDI PDF to CSV</h1>
+
+    <!-- The form sends POST to /upload, swapping only the content of #result -->
     <form
       hx-post="/upload"
       hx-target="#result"
-      hx-swap="outerHTML"
+      hx-swap="innerHTML"
       hx-encoding="multipart/form-data"
       hx-on:beforeRequest="document.getElementById('loading-spinner').style.display = 'block'"
       hx-on:afterRequest="document.getElementById('loading-spinner').style.display = 'none'"
@@ -57,6 +59,8 @@
       <div class="spinner"></div>
     </div>
 
+    <!-- Results are swapped into here -->
     <div id="result"></div>
+
   </body>
 </html>
