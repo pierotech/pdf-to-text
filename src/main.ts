@@ -69,44 +69,48 @@ function convertJsonToCsv(jsonData: any[]): string {
  * 
  * We'll gather each block as a single string, push it into an array.
  */
-function extractBlocksFromPDFText(fullText: string): string[] {
-  const blocks: string[] = [];
+function extractBlocksFromPDFText(fullText: string): { id: string; blockText: string }[] {
+  const blocks: { id: string; blockText: string }[] = [];
   
   const lines = fullText.split("\n");
-  let currentBlock: string[] = [];
+  let currentLines: string[] = [];
+  let currentID = "";
   let capturing = false;
-  
+
   for (const line of lines) {
-    // If line starts with "Sucursal" (ignore case), we begin capturing a new block
-    if (line.toLowerCase().startsWith("sucursal")) {
-      // If there was a block in progress, push it first
-      if (currentBlock.length > 0) {
-        blocks.push(currentBlock.join("\n"));
+    const sucursalMatch = line.match(/^Sucursal\s+(\d{13})\s+/i);
+    // e.g. "Sucursal   8422416200140 ..."
+
+    if (sucursalMatch) {
+      // If a previous block was in progress, push it
+      if (currentLines.length > 0) {
+        blocks.push({ id: currentID, blockText: currentLines.join("\n") });
       }
       // Start a fresh block
-      currentBlock = [line];
+      currentLines = [line];
+      currentID = sucursalMatch[1]; // The 13-digit ID
       capturing = true;
       continue;
     }
-    
+
     if (capturing) {
-      currentBlock.push(line);
+      currentLines.push(line);
       // If line includes "* Total importe en la sucursal:"
-      // we consider that as the end of the block
       if (/\* total importe en la sucursal:\s*\d+(\.\d+)?/i.test(line)) {
         // End of this block
-        blocks.push(currentBlock.join("\n"));
-        currentBlock = [];
+        blocks.push({ id: currentID, blockText: currentLines.join("\n") });
+        currentLines = [];
+        currentID = "";
         capturing = false;
       }
     }
   }
-  
-  // If final block didn't end with "* Total importe en la sucursal", push it anyway
-  if (capturing && currentBlock.length > 0) {
-    blocks.push(currentBlock.join("\n"));
+
+  // If final block didn’t end with "* Total importe en la sucursal", push it anyway
+  if (capturing && currentLines.length > 0) {
+    blocks.push({ id: currentID, blockText: currentLines.join("\n") });
   }
-  
+
   return blocks;
 }
 
