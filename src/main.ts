@@ -37,7 +37,7 @@ function extractJsonFromResponse(responseText: string): string {
 
 // Convert final JSON to CSV
 function convertJsonToCsv(jsonData: any[]): string {
-  const CSV_HEADERS = "SucursalID,SucursalName,EAN,CantidadVendida,Importe,NumPersonaVtas";
+  const CSV_HEADERS = "SucursalID,SucursalName,EAN,CantidadVendida,Importe";
 
   const csvRows = jsonData.map((record) => {
     // Safely convert numeric fields
@@ -50,7 +50,6 @@ function convertJsonToCsv(jsonData: any[]): string {
       `"${record.EAN}"`,
       cantidad,
       importeVal.toFixed(2),
-      `"${record.NumPersonaVtas}"`,
     ].join(",");
   });
 
@@ -191,7 +190,6 @@ app.post("/upload", async (c) => {
             '    "EAN": "string",\n' +
             '    "CantidadVendida": "integer",\n' +
             '    "Importe": "float",\n' +
-            '    "NumPersonaVtas": "string"\n' +
             "  }\n" +
             "]\n" +
             "```\n\n" +
