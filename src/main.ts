@@ -13,7 +13,7 @@ type Bindings = {
 const app = new Hono<{ Bindings: Bindings }>();
 
 // 1) BasicAuth for all routes
-app.use("*", basicAuth({ username: "USER", password: "PASS" }));
+app.use("*", basicAuth({ username: "olistic", password: "Olistic123" }));
 
 //
 // ────────────────────────────────────────────────────────────
