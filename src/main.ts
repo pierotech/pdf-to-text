@@ -38,18 +38,22 @@ function extractJsonFromResponse(responseText: string): string {
 // Convert final JSON to CSV
 function convertJsonToCsv(jsonData: any[]): string {
   const CSV_HEADERS = "SucursalID,SucursalName,EAN,CantidadVendida,Importe,NumPersonaVtas";
-  
+
   const csvRows = jsonData.map((record) => {
+    // Safely convert numeric fields
+    const cantidad = parseInt(record.CantidadVendida, 10) || 0;
+    const importeVal = parseFloat(record.Importe) || 0; // fallback to 0 if parse fails
+
     return [
       `"${record.SucursalID}"`,
       `"${record.SucursalName}"`,
       `"${record.EAN}"`,
-      record.CantidadVendida,
-      record.Importe.toFixed(2),
+      cantidad,
+      importeVal.toFixed(2),
       `"${record.NumPersonaVtas}"`,
     ].join(",");
   });
-  
+
   return CSV_HEADERS + "\n" + csvRows.join("\n");
 }
 
