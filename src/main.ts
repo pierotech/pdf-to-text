@@ -172,11 +172,9 @@ app.post("/upload", async (c) => {
     const splittedBlocks = splitBlocksForOpenAI(blocks, MAX_BLOCKS_PER_REQUEST);
     
     // 6) Send each splittedBlocks array to OpenAI, accumulate JSON
-    const allJsonData: any[] = [];
+    let allJsonData: any[] = [];
     const OPENAI_API_KEY = c.env.OPENAI_API_KEY;
-const openaiUrl = "https://api.openai.com/v1/chat/completions";
-
-let allJsonData: any[] = [];
+    const openaiUrl = "https://api.openai.com/v1/chat/completions";
 
 for (const blockObj of blocks) {
   // (A) Grab the real, local‐parsed SucursalID
