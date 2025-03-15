@@ -37,7 +37,7 @@ function extractJsonFromResponse(responseText: string): string {
 
 // Convert final JSON to CSV
 function convertJsonToCsv(jsonData: any[]): string {
-  const CSV_HEADERS = "SucursalID,SucursalName,EAN,CantidadVendida,Importe";
+  const CSV_HEADERS = "SucursalID,SucursalName,EAN,CantidadVendida,Importe,NumPersonaVtas";
 
   const csvRows = jsonData.map((record) => {
     // Safely convert numeric fields
@@ -50,6 +50,7 @@ function convertJsonToCsv(jsonData: any[]): string {
       `"${record.EAN}"`,
       cantidad,
       importeVal.toFixed(2),
+      `"${record.NumPersonaVtas}"`,
     ].join(",");
   });
 
@@ -68,48 +69,44 @@ function convertJsonToCsv(jsonData: any[]): string {
  * 
  * We'll gather each block as a single string, push it into an array.
  */
-function extractBlocksFromPDFText(fullText: string): { id: string; blockText: string }[] {
-  const blocks: { id: string; blockText: string }[] = [];
+function extractBlocksFromPDFText(fullText: string): string[] {
+  const blocks: string[] = [];
   
   const lines = fullText.split("\n");
-  let currentLines: string[] = [];
-  let currentID = "";
+  let currentBlock: string[] = [];
   let capturing = false;
-
+  
   for (const line of lines) {
-    const sucursalMatch = line.match(/^Sucursal\s+(\d{13})\s+/i);
-    // e.g. "Sucursal   8422416200140 ..."
-
-    if (sucursalMatch) {
-      // If a previous block was in progress, push it
-      if (currentLines.length > 0) {
-        blocks.push({ id: currentID, blockText: currentLines.join("\n") });
+    // If line starts with "Sucursal" (ignore case), we begin capturing a new block
+    if (line.toLowerCase().startsWith("sucursal")) {
+      // If there was a block in progress, push it first
+      if (currentBlock.length > 0) {
+        blocks.push(currentBlock.join("\n"));
       }
       // Start a fresh block
-      currentLines = [line];
-      currentID = sucursalMatch[1]; // The 13-digit ID
+      currentBlock = [line];
       capturing = true;
       continue;
     }
-
+    
     if (capturing) {
-      currentLines.push(line);
+      currentBlock.push(line);
       // If line includes "* Total importe en la sucursal:"
+      // we consider that as the end of the block
       if (/\* total importe en la sucursal:\s*\d+(\.\d+)?/i.test(line)) {
         // End of this block
-        blocks.push({ id: currentID, blockText: currentLines.join("\n") });
-        currentLines = [];
-        currentID = "";
+        blocks.push(currentBlock.join("\n"));
+        currentBlock = [];
         capturing = false;
       }
     }
   }
-
-  // If final block didn’t end with "* Total importe en la sucursal", push it anyway
-  if (capturing && currentLines.length > 0) {
-    blocks.push({ id: currentID, blockText: currentLines.join("\n") });
+  
+  // If final block didn't end with "* Total importe en la sucursal", push it anyway
+  if (capturing && currentBlock.length > 0) {
+    blocks.push(currentBlock.join("\n"));
   }
-
+  
   return blocks;
 }
 
@@ -172,85 +169,73 @@ app.post("/upload", async (c) => {
     const splittedBlocks = splitBlocksForOpenAI(blocks, MAX_BLOCKS_PER_REQUEST);
     
     // 6) Send each splittedBlocks array to OpenAI, accumulate JSON
-    let allJsonData: any[] = [];
+    const allJsonData: any[] = [];
     const OPENAI_API_KEY = c.env.OPENAI_API_KEY;
     const openaiUrl = "https://api.openai.com/v1/chat/completions";
-
-for (const blockObj of blocks) {
-  // (A) Grab the real, local‐parsed SucursalID
-  const realID = blockObj.id;       
-  // e.g. "8422416200140"  
-  const blockText = blockObj.blockText;
-
-  // (B) Build the user message, forcing the real 13‐digit ID
-  //    so GPT never guesses something like "0014".
-  const userMessage = `
-Here is a block of text for a Sucursal. The **true** 13-digit SucursalID is: ${realID}.
-
-Block Content:
-${blockText}
-
-Please extract all sales data as a JSON array with these fields:
-[ 
-  {
-    "SucursalID": "string",
-    "SucursalName": "string",
-    "EAN": "string",
-    "CantidadVendida": "integer",
-    "Importe": "float"
-  }
-]
-
-**Important**:
-- For each sale record in this block, set "SucursalID" to "${realID}" exactly (even if the parentheses say something else).
-- The response must be valid JSON inside triple backticks, no extra text.
-- Floating‐point numbers must have two decimals (e.g. 49.90, not 49).
-`;
-
-  // (C) Build the system + user messages as usual
-  const messages = [
-    {
-      role: "system",
-      content:
-        "You are a data extraction assistant. Return only valid JSON, no extra text or explanations.",
-    },
-    {
-      role: "user",
-      content: userMessage,
-    },
-  ];
-
-  // (D) GPT request body
-  const chatBody = {
-    model: "gpt-4-turbo",
-    messages,
-    temperature: 0,
-    max_tokens: 2000,
-  };
-
-  // (E) Call OpenAI
-  const response = await fetch(openaiUrl, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${OPENAI_API_KEY}`,
-    },
-    body: JSON.stringify(chatBody),
-  });
-
-  if (!response.ok) {
-    const err = await response.text();
-    console.error("❌ OpenAI API Error:", err);
-    return c.text(`Error: OpenAI API failed: ${err}`, 500);
-  }
-
-  const completion = await response.json();
-  const rawJson = completion?.choices?.[0]?.message?.content ?? "";
-
-  // (F) Extract/validate JSON snippet
-  const cleanJson = extractJsonFromResponse(rawJson); // your existing function
-  allJsonData.push(...JSON.parse(cleanJson));
-}
+    
+    for (const blockGroup of splittedBlocks) {
+      // Build a single string from these blocks
+      // We'll just join them with a delimiter
+      const chunkText = blockGroup.join("\n\n");
+      
+      const messages = [
+        {
+          role: "system",
+          content:
+            "You are a data extraction assistant. Return a valid JSON array with the structure:\n\n" +
+            "```json\n" +
+            "[\n" +
+            "  {\n" +
+            '    "SucursalID": "string",\n' +
+            '    "SucursalName": "string",\n' +
+            '    "EAN": "string",\n' +
+            '    "CantidadVendida": "integer",\n' +
+            '    "Importe": "float",\n' +
+            '    "NumPersonaVtas": "string"\n' +
+            "  }\n" +
+            "]\n" +
+            "```\n\n" +
+            "- The response must be valid JSON inside triple backticks.\n" +
+            "- No additional text or explanations.\n" +
+            "- Each item is a single sale record from these blocks.\n" +
+            "- If some block has no sales, skip it or return an empty array.\n" +
+            "- Floating‐point numbers always have decimal digits (e.g. 49.90).",
+        },
+        {
+          role: "user",
+          content: `Here are some Sucursal blocks:\n\n${chunkText}\n\nPlease parse them and return only a valid JSON array with all the records.`,
+        },
+      ];
+      
+      const chatBody = {
+        model: "gpt-4-turbo",
+        messages,
+        temperature: 0,
+        max_tokens: 2000,
+      };
+      
+      const response = await fetch(openaiUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${OPENAI_API_KEY}`,
+        },
+        body: JSON.stringify(chatBody),
+      });
+      
+      if (!response.ok) {
+        const err = await response.text();
+        console.error("❌ OpenAI API Error:", err);
+        return c.text(`Error: OpenAI API failed: ${err}`, 500);
+      }
+      
+      const completion = await response.json();
+      const rawJson = completion?.choices?.[0]?.message?.content ?? "";
+      const cleanJson = extractJsonFromResponse(rawJson);
+      
+      // Merge partial JSON into allJsonData
+      allJsonData.push(...JSON.parse(cleanJson));
+    }
     
     // 7) Now we have all JSON in allJsonData
     // Convert to CSV
