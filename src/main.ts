@@ -37,7 +37,7 @@ function extractJsonFromResponse(responseText: string): string {
 
 // Convert final JSON to CSV
 function convertJsonToCsv(jsonData: any[]): string {
-  const CSV_HEADERS = "SucursalID,SucursalName,EAN,CantidadVendida,Importe,NumPersonaVtas";
+  const CSV_HEADERS = "SucursalID,SucursalName,EAN,CantidadVendida,Importe";
 
   const csvRows = jsonData.map((record) => {
     // Safely convert numeric fields
@@ -50,7 +50,6 @@ function convertJsonToCsv(jsonData: any[]): string {
       `"${record.EAN}"`,
       cantidad,
       importeVal.toFixed(2),
-      `"${record.NumPersonaVtas}"`,
     ].join(",");
   });
 
@@ -200,8 +199,7 @@ Please extract all sales data as a JSON array with these fields:
     "SucursalName": "string",
     "EAN": "string",
     "CantidadVendida": "integer",
-    "Importe": "float",
-    "NumPersonaVtas": "string"
+    "Importe": "float"
   }
 ]
 
