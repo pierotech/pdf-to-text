@@ -165,7 +165,7 @@ app.post("/upload", async (c) => {
     const blocks = extractBlocksFromPDFText(textContent);
     
     // 5) Decide how many blocks per request. We'll set, for example, 5 blocks per request
-    const MAX_BLOCKS_PER_REQUEST = 5; // tweak as needed
+    const MAX_BLOCKS_PER_REQUEST = 16; // tweak as needed
     const splittedBlocks = splitBlocksForOpenAI(blocks, MAX_BLOCKS_PER_REQUEST);
     
     // 6) Send each splittedBlocks array to OpenAI, accumulate JSON
