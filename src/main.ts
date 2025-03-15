@@ -230,6 +230,7 @@ app.post("/upload", async (c) => {
       const completion = await response.json();
       const rawJson = completion?.choices?.[0]?.message?.content ?? "";
       const cleanJson = extractJsonFromResponse(rawJson);
+      console.log(cleanJson);
       
       // Merge partial JSON into allJsonData
       allJsonData.push(...JSON.parse(cleanJson));
