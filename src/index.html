@@ -1,39 +1,143 @@
 <!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <script src="https://unpkg.com/htmx.org@1.9.12"></script>
-    <title>Olistic Daily Sales Report EDI PDF to CSV</title>
-    <style>
-      /* Spinner Styles */
-      #loading-spinner {
-        display: none;
-        margin-top: 20px;
-        text-align: center;
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <script src="https://unpkg.com/htmx.org@1.9.12"></script>
+  <title>Olistic Daily Sales Report EDI PDF to CSV</title>
+  
+  <style>
+    /* General Reset */
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+      font-family: Arial, sans-serif;
+    }
+
+    body {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      background-color: #f4f4f4;
+      padding: 20px;
+    }
+
+    .container {
+      width: 100%;
+      max-width: 500px;
+      background: white;
+      padding: 20px;
+      border-radius: 10px;
+      box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+      text-align: center;
+    }
+
+    /* Logo */
+    .logo {
+      max-width: 150px;
+      margin-bottom: 15px;
+    }
+
+    h1 {
+      font-size: 22px;
+      margin-bottom: 20px;
+      color: #333;
+    }
+
+    fieldset {
+      border: none;
+      padding: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 15px;
+    }
+
+    label {
+      font-weight: bold;
+      text-align: left;
+      display: block;
+      margin-bottom: 5px;
+      color: #555;
+    }
+
+    input[type="file"] {
+      width: 100%;
+      padding: 10px;
+      border: 1px solid #ddd;
+      border-radius: 5px;
+      background: #fff;
+      cursor: pointer;
+    }
+
+    button {
+      background-color: #3498db;
+      color: white;
+      border: none;
+      padding: 12px;
+      border-radius: 5px;
+      font-size: 16px;
+      cursor: pointer;
+      transition: background 0.3s ease-in-out;
+    }
+
+    button:hover {
+      background-color: #2980b9;
+    }
+
+    /* Loading Spinner */
+    #loading-spinner {
+      display: none;
+      margin-top: 20px;
+      text-align: center;
+    }
+
+    .spinner {
+      width: 40px;
+      height: 40px;
+      border: 4px solid rgba(0, 0, 0, 0.1);
+      border-left-color: #3498db;
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+      display: inline-block;
+      margin-top: 10px;
+    }
+
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+
+    /* Responsive Design */
+    @media (max-width: 600px) {
+      .container {
+        width: 90%;
+        padding: 15px;
       }
 
-      .spinner {
-        width: 36px;
-        height: 36px;
-        border: 4px solid rgba(0, 0, 0, 0.1);
-        border-left-color: #3498db;
-        border-radius: 50%;
-        animation: spin 1s linear infinite;
-        display: inline-block;
+      h1 {
+        font-size: 18px;
       }
 
-      @keyframes spin {
-        0% { transform: rotate(0deg); }
-        100% { transform: rotate(360deg); }
+      button {
+        font-size: 14px;
+        padding: 10px;
       }
-    </style>
-  </head>
-  <body>
+    }
+  </style>
+</head>
+
+<body>
+  <div class="container">
+    <!-- Logo -->
+    <img src="https://cdn.shopify.com/s/files/1/0676/8207/4910/files/logo_olistic_eci.png?v=1742063858" alt="Company Logo" class="logo" height="auto" width="250">
+
     <h1>Olistic Daily Sales Report EDI PDF to CSV</h1>
 
-    <!-- The form sends POST to /upload, swapping only the content of #result -->
-    <form
+    <!-- Form with Loading Spinner -->
+    <form 
       hx-post="/upload"
       hx-target="#result"
       hx-swap="innerHTML"
@@ -43,7 +147,7 @@
     >
       <fieldset>
         <div>
-          <label for="pdf">Archivo PDF</label>
+          <label for="pdf">Sube tu archivo PDF</label>
           <input type="file" name="pdf" required />
         </div>
 
@@ -59,8 +163,8 @@
       <div class="spinner"></div>
     </div>
 
-    <!-- Results are swapped into here -->
+    <!-- Results will be placed here -->
     <div id="result"></div>
-
-  </body>
+  </div>
+</body>
 </html>
