@@ -87,6 +87,11 @@
       background-color: #2980b9;
     }
 
+    button:disabled {
+      background-color: #ccc;
+      cursor: not-allowed;
+    }
+
     /* Loading Spinner */
     #loading-spinner {
       display: none;
@@ -132,7 +137,7 @@
 <body>
   <div class="container">
     <!-- Logo -->
-    <img src="https://cdn.shopify.com/s/files/1/0676/8207/4910/files/logo_olistic_eci.png?v=1742063858" alt="Company Logo" class="logo" height="auto" width="250">
+    <img src="https://cdn.shopify.com/s/files/1/0676/8207/4910/files/logo_olistic_eci.png?v=1742063858" alt="Olistic" class="logo" height="auto" width="250">
 
     <h1>Olistic Daily Sales Report EDI PDF to CSV</h1>
 
@@ -142,8 +147,8 @@
       hx-target="#result"
       hx-swap="innerHTML"
       hx-encoding="multipart/form-data"
-      hx-on:beforeRequest="document.getElementById('loading-spinner').style.display = 'block'"
-      hx-on:afterRequest="document.getElementById('loading-spinner').style.display = 'none'"
+      hx-on:beforeRequest="showSpinner()"
+      hx-on:afterRequest="hideSpinner()"
     >
       <fieldset>
         <div>
@@ -152,12 +157,12 @@
         </div>
 
         <div>
-          <button type="submit">Procesar</button>
+          <button id="submit-btn" type="submit">Procesar</button>
         </div>
       </fieldset>
     </form>
 
-    <!-- Loading Spinner -->
+    <!-- Loading Spinner (Always Visible in the DOM) -->
     <div id="loading-spinner">
       <p>Procesando, por favor espera...</p>
       <div class="spinner"></div>
@@ -166,5 +171,19 @@
     <!-- Results will be placed here -->
     <div id="result"></div>
   </div>
+
+  <script>
+    function showSpinner() {
+      document.getElementById('loading-spinner').style.display = 'block';
+      document.getElementById('submit-btn').disabled = true;
+    }
+
+    function hideSpinner() {
+      setTimeout(() => {
+        document.getElementById('loading-spinner').style.display = 'none';
+        document.getElementById('submit-btn').disabled = false;
+      }, 100); // Delay ensures visibility
+    }
+  </script>
 </body>
 </html>
