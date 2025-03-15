@@ -38,7 +38,7 @@
 
     /* Logo */
     .logo {
-      max-width: 150px;
+      max-width: 250px;
       margin-bottom: 15px;
     }
 
@@ -138,12 +138,14 @@
 <body>
   <div class="container">
     <!-- Logo -->
-    <img src="https://cdn.shopify.com/s/files/1/0676/8207/4910/files/logo_olistic_eci.png?v=1742063858" alt="Olistic" class="logo" height="auto" width="250">
+    <img src="https://cdn.shopify.com/s/files/1/0676/8207/4910/files/logo_olistic_eci.png?v=1742063858" 
+         alt="Olistic" class="logo" height="auto" width="250">
 
     <h1>Olistic EDI PDF a CSV</h1>
 
     <!-- Form with Loading Spinner -->
     <form 
+      id="upload-form"
       hx-post="/upload"
       hx-target="#result"
       hx-swap="innerHTML"
@@ -175,15 +177,17 @@
 
   <script>
     function showSpinner() {
+      console.log("⏳ Spinner shown"); // Debugging log
       document.getElementById('loading-spinner').style.display = 'block';
       document.getElementById('submit-btn').disabled = true;
     }
 
     function hideSpinner() {
       setTimeout(() => {
+        console.log("✅ Spinner hidden"); // Debugging log
         document.getElementById('loading-spinner').style.display = 'none';
         document.getElementById('submit-btn').disabled = false;
-      }, 100); // Delay ensures visibility
+      }, 200); // Added small delay to ensure visibility
     }
   </script>
 </body>
